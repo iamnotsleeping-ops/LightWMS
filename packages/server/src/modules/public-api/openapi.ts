@@ -400,7 +400,7 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-6 销售订单行',
         description:
-          '一行 = 销售单的一行物料。字段：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
+          '一行 = 销售单的一行物料。字段：订单号 / 行号 / 订单日期 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
           '未出库量 = quantity − shipped_qty − cancelled_qty。',
         parameters: [
           keywordParam,
@@ -429,6 +429,7 @@ export const openapiDocument = {
               {
                 order_no: 'SO-20260918-0001',
                 line_no: 1,
+                order_date: '2026-09-18',
                 customer_code: 'CU-2001',
                 item_code: 'FG-1001',
                 warehouse_code: 'WH-02',
