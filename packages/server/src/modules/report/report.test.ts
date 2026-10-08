@@ -1,0 +1,338 @@
+import type { FastifyInstance } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildApp } from '../../app';
+import type { Db } from '../../db/connection';
+import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
+import { changeStockStatus, postMovement } from '../inventory/stock.engine';
+import { receivePurchase } from '../purchase/purchase.inbound';
+import {
+  confirmOrder as confirmPurchase,
+  createOrder as createPurchase,
+} from '../purchase/purchase.service';
+
+let db: Db;
+let fx: Fixtures;
+let app: FastifyInstance;
+let token: string;
+let noPermToken: string;
+
+const REPORT_VIEW = ['report.view'];
+
+beforeEach(async () => {
+  db = createTestDb();
+  fx = seedFixtures(db);
+  app = await buildApp();
+  token = app.jwt.sign({ sub: 1, name: 'tester', roles: ['sys_admin'], permissions: REPORT_VIEW });
+  noPermToken = app.jwt.sign({ sub: 2, name: 'guest', roles: [], permissions: [] });
+});
+
+afterEach(async () => {
+  await app.close();
+});
+
+const get = (url: string, bearer: string | null = token) =>
+  app.inject({
+    method: 'GET',
+    url,
+    headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+  });
+
+/** 造一笔库存流水（默认 available 桶） */
+function addStock(quantity: number, direction: 1 | -1, occurredAt: string, opts?: {
+  bizType?: string;
+  unitCost?: number;
+  warehouseId?: number;
+  productId?: number;
+}): void {
+  postMovement({
+    productId: opts?.productId ?? fx.itemId,
+    warehouseId: opts?.warehouseId ?? fx.warehouseId,
+    stockStatus: 'available',
+    bizType: (opts?.bizType ?? 'adjust') as never,
+    direction,
+    quantity,
+    unitCost: opts?.unitCost ?? 500,
+    occurredAt,
+  });
+}
+
+/** 建一张已确认采购单（单行），返回 orderId 与 orderItemId */
+function makeConfirmedPurchase(
+  quantity: number,
+  orderDate: string,
+  promisedDate: string,
+  supplierId = fx.supplierId,
+): { orderId: number; itemId: number } {
+  const { id } = createPurchase(
+    {
+      supplier_id: supplierId,
+      order_date: orderDate,
+      items: [
+        {
+          product_id: fx.itemId,
+          warehouse_id: fx.warehouseId,
+          quantity,
+          unit_price: 500,
+          promised_date: promisedDate,
+        },
+      ],
+    },
+    null,
+  );
+  confirmPurchase(id);
+  const row = db.prepare('SELECT id FROM purchase_order_item WHERE order_id = ?').get(id) as {
+    id: number;
+  };
+  return { orderId: id, itemId: row.id };
+}
+
+function insertSupplier(code: string, name: string): number {
+  const now = new Date().toISOString();
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO partner (code, name, type, is_active, created_at, updated_at)
+         VALUES (?, ?, 'supplier', 1, ?, ?)`,
+      )
+      .run(code, name, now, now).lastInsertRowid,
+  );
+}
+
+describe('报表接口 · 鉴权', () => {
+  it('未登录 401、无权限 403、有权限 200', async () => {
+    const urls = [
+      '/api/reports/inventory-ledger',
+      '/api/reports/stock-snapshot',
+      '/api/reports/item-movement',
+      '/api/reports/supplier-lead-time',
+    ];
+    for (const url of urls) {
+      const anonymous = await get(url, null);
+      expect(anonymous.statusCode, url).toBe(401);
+      expect(anonymous.json().code, url).toBe(401);
+
+      const forbidden = await get(url, noPermToken);
+      expect(forbidden.statusCode, url).toBe(403);
+
+      const allowed = await get(url);
+      expect(allowed.statusCode, url).toBe(200);
+      expect(allowed.json().code, url).toBe(0);
+    }
+  });
+});
+
+describe('IF-R1 进销存明细账', () => {
+  it('期初 / 入库 / 出库 / 期末数量与金额正确', async () => {
+    addStock(100, 1, '2026-01-05T00:00:00.000Z', { unitCost: 500 });
+    addStock(50, 1, '2026-02-10T00:00:00.000Z', { unitCost: 600 });
+    addStock(30, -1, '2026-02-20T00:00:00.000Z', { bizType: 'sale_out' });
+
+    const body = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-02-01&dateTo=2026-02-28')
+    ).json();
+
+    expect(body.page.total).toBe(1);
+    expect(body.data[0]).toMatchObject({
+      product_code: 'RM-001',
+      warehouse_code: 'WH-01',
+      opening_qty: 100,
+      in_qty: 50,
+      out_qty: 30,
+      closing_qty: 120,
+      opening_amount: 50000,
+      in_amount: 30000,
+      out_amount: 15990,
+      closing_amount: 64010,
+    });
+    expect(body._warnings.length).toBeGreaterThan(0);
+  });
+
+  it('跨区间两段流水求和正确（区间放大到覆盖全部）', async () => {
+    addStock(100, 1, '2026-01-05T00:00:00.000Z', { unitCost: 500 });
+    addStock(50, 1, '2026-02-10T00:00:00.000Z', { unitCost: 600 });
+    addStock(30, -1, '2026-02-20T00:00:00.000Z', { bizType: 'sale_out' });
+
+    const body = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-01-01&dateTo=2026-02-28')
+    ).json();
+    expect(body.data[0]).toMatchObject({
+      opening_qty: 0,
+      in_qty: 150,
+      out_qty: 30,
+      closing_qty: 120,
+      in_amount: 80000,
+    });
+  });
+
+  it('排除 status_change：状态转移不虚增入库 / 出库两栏', async () => {
+    addStock(100, 1, '2026-03-01T00:00:00.000Z', { unitCost: 500 });
+    changeStockStatus({
+      productId: fx.itemId,
+      warehouseId: fx.warehouseId,
+      fromStatus: 'available',
+      toStatus: 'frozen',
+      quantity: 40,
+      occurredAt: '2026-03-05T00:00:00.000Z',
+    });
+
+    const body = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-03-01&dateTo=2026-03-31')
+    ).json();
+    expect(body.data[0]).toMatchObject({ in_qty: 100, out_qty: 0, closing_qty: 100 });
+  });
+
+  it('dateTo 归一到当日末刻，当日流水不被漏掉', async () => {
+    addStock(70, 1, '2026-04-15T20:00:00.000Z', { unitCost: 500 });
+
+    const body = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-04-15&dateTo=2026-04-15')
+    ).json();
+    expect(body.data[0]).toMatchObject({ in_qty: 70, closing_qty: 70 });
+  });
+});
+
+describe('IF-R2 库存现状表', () => {
+  it('六项口径与金额列正确；asOf 时金额为 null 且给出告警', async () => {
+    addStock(100, 1, '2026-06-01T00:00:00.000Z', { unitCost: 500 });
+
+    const current = (await get('/api/reports/stock-snapshot')).json();
+    expect(current.page.total).toBe(1);
+    expect(current.data[0]).toMatchObject({
+      product_code: 'RM-001',
+      warehouse_code: 'WH-01',
+      on_hand: 100,
+      frozen: 0,
+      avg_cost: 500,
+      on_hand_amount: 50000,
+    });
+
+    const historical = (await get('/api/reports/stock-snapshot?asOf=2026-07-01')).json();
+    expect(historical.data[0]).toMatchObject({
+      on_hand: 100,
+      reserved: null,
+      in_transit: null,
+      available: null,
+      projected: null,
+      avg_cost: null,
+      on_hand_amount: null,
+    });
+    expect(historical._warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe('IF-R3 商品收发明细', () => {
+  it('bizType / productId 过滤生效，amount = quantity × unit_cost', async () => {
+    addStock(10, 1, '2026-05-01T00:00:00.000Z', { bizType: 'adjust', unitCost: 500 });
+    addStock(20, 1, '2026-05-02T00:00:00.000Z', { bizType: 'purchase_in', unitCost: 700 });
+
+    const body = (await get(`/api/reports/item-movement?productId=${fx.itemId}&bizType=purchase_in`)).json();
+    expect(body.page.total).toBe(1);
+    const row = body.data[0];
+    expect(row.biz_type).toBe('purchase_in');
+    expect(row.quantity).toBe(20);
+    expect(row.unit_cost).toBe(700);
+    expect(row.amount).toBe(14000);
+  });
+});
+
+describe('IF-R4 供应商提前期分析', () => {
+  it('多供应商分组聚合正确，未到货单不计入提前期均值', async () => {
+    const supplier2 = insertSupplier('SU-02', '二号供应商');
+
+    // SU-01：两单，一单准时一单超期
+    const a = makeConfirmedPurchase(40, '2026-01-01', '2026-01-10');
+    receivePurchase(
+      { orderId: a.orderId, lines: [{ orderItemId: a.itemId, quantity: 40 }], occurredAt: '2026-01-05T00:00:00.000Z' },
+      null,
+    );
+    const b = makeConfirmedPurchase(40, '2026-02-01', '2026-02-10');
+    receivePurchase(
+      { orderId: b.orderId, lines: [{ orderItemId: b.itemId, quantity: 40 }], occurredAt: '2026-02-20T00:00:00.000Z' },
+      null,
+    );
+    // SU-02：一单已到货，一单未到货（不计入）
+    const c = makeConfirmedPurchase(30, '2026-01-15', '2026-01-25', supplier2);
+    receivePurchase(
+      { orderId: c.orderId, lines: [{ orderItemId: c.itemId, quantity: 30 }], occurredAt: '2026-01-20T00:00:00.000Z' },
+      null,
+    );
+    makeConfirmedPurchase(10, '2026-03-01', '2026-03-10', supplier2);
+
+    const body = (await get('/api/reports/supplier-lead-time')).json();
+    expect(body.page.total).toBe(2);
+
+    const su1 = body.data.find((row: { supplier_code: string }) => row.supplier_code === 'SU-01');
+    expect(su1).toMatchObject({
+      order_count: 2,
+      line_count: 2,
+      received_line_count: 2,
+      avg_lead_time_days: 11.5,
+      min_lead_time_days: 4,
+      max_lead_time_days: 19,
+      avg_promised_lead_time_days: 9,
+      on_time_rate: 0.5,
+      last_order_date: '2026-02-01',
+    });
+
+    const su2 = body.data.find((row: { supplier_code: string }) => row.supplier_code === 'SU-02');
+    expect(su2).toMatchObject({
+      order_count: 1,
+      line_count: 1,
+      avg_lead_time_days: 5,
+      avg_promised_lead_time_days: 10,
+      on_time_rate: 1,
+      last_order_date: '2026-01-15',
+    });
+  });
+});
+
+describe('format=csv', () => {
+  it('4 张报表返回 text/csv、带 BOM、业务列序、不套信封', async () => {
+    addStock(25, 1, '2026-06-01T00:00:00.000Z', { unitCost: 400 });
+    const { orderId, itemId } = makeConfirmedPurchase(15, '2026-01-01', '2026-01-10');
+    receivePurchase(
+      { orderId, lines: [{ orderItemId: itemId, quantity: 15 }], occurredAt: '2026-01-05T00:00:00.000Z' },
+      null,
+    );
+
+    const cases: [string, string][] = [
+      ['/api/reports/inventory-ledger?format=csv&dateFrom=2026-01-01&dateTo=2026-12-31', 'product_id'],
+      ['/api/reports/stock-snapshot?format=csv', 'product_id'],
+      ['/api/reports/item-movement?format=csv', 'id'],
+      ['/api/reports/supplier-lead-time?format=csv', 'supplier_code'],
+    ];
+
+    for (const [url, firstColumn] of cases) {
+      const res = await get(url);
+      expect(res.statusCode, url).toBe(200);
+      expect(res.headers['content-type'], url).toContain('text/csv');
+      expect(res.body.charAt(0), url).toBe('\uFEFF');
+      const header = res.body.replace(/^\uFEFF/, '').split('\r\n')[0].split(',');
+      expect(header[0], url).toBe(firstColumn);
+      expect(res.body, url).not.toContain('"_warnings"');
+    }
+  });
+});
+
+describe('只读性', () => {
+  it('调用 4 张报表前后不产生任何写入', async () => {
+    addStock(10, 1, '2026-06-01T00:00:00.000Z', { unitCost: 500 });
+    const before = {
+      transactions: (db.prepare('SELECT COUNT(*) AS n FROM stock_transaction').get() as { n: number }).n,
+      balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
+      orders: (db.prepare('SELECT COUNT(*) AS n FROM purchase_order').get() as { n: number }).n,
+    };
+
+    await get('/api/reports/inventory-ledger');
+    await get('/api/reports/stock-snapshot');
+    await get('/api/reports/item-movement');
+    await get('/api/reports/supplier-lead-time');
+
+    const after = {
+      transactions: (db.prepare('SELECT COUNT(*) AS n FROM stock_transaction').get() as { n: number }).n,
+      balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
+      orders: (db.prepare('SELECT COUNT(*) AS n FROM purchase_order').get() as { n: number }).n,
+    };
+    expect(after).toEqual(before);
+  });
+});

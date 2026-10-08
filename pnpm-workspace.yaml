@@ -1,0 +1,11 @@
+packages:
+  - 'packages/*'
+
+# pnpm 11 起使用 allowBuilds 显式放行依赖的构建脚本（仅命中这些包）
+# better-sqlite3：需 install 脚本准备原生绑定
+# esbuild：vite / vitest 依赖
+# vue-demi：pinia 依赖
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  vue-demi: true

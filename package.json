@@ -1,0 +1,21 @@
+{
+  "name": "light-erp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "轻量级进销存系统：业务系统 + 供应链计划数据底座",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "migrate": "pnpm --filter @light-erp/server migrate",
+    "seed": "pnpm --filter @light-erp/server seed",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

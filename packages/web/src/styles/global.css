@@ -1,0 +1,19 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+  color: #303133;
+  background: #f5f7fa;
+}
+
+/* 金额、数量统一右对齐并使用等宽数字，便于对账 */
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
