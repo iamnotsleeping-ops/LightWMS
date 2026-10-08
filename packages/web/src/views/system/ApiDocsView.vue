@@ -75,7 +75,7 @@ const interfaces: ApiDoc[] = [
     ifNo: 'IF-3',
     path: '/inventory',
     params: 'as_of, keyword, item_code, warehouse_code, page, page_size, format',
-    returns: '库存数组（六项口径）+ page',
+    returns: '库存数组（on_hand/frozen/qc/total_qty + reserved/in_transit/available/projected）+ page',
     curl: `${base} ${apiBase}/inventory?item_code=RM-001`,
   },
   {

@@ -194,6 +194,8 @@ export function queryPublicInventory(query: PublicInventoryQuery): PublicPaged {
     warehouse_type: row.warehouse_type,
     on_hand: row.on_hand,
     frozen: row.frozen,
+    qc: row.qc,
+    total_qty: row.total_qty,
     reserved: row.reserved,
     in_transit: row.in_transit,
     available: row.available,
@@ -202,7 +204,7 @@ export function queryPublicInventory(query: PublicInventoryQuery): PublicPaged {
 
   const warnings = result.asOf
     ? [
-        '指定 as_of 时 reserved / in_transit / available / projected 为单据派生量，历史时点不可还原，返回 null；on_hand / frozen 已按 stock_transaction 重算',
+        '指定 as_of 时 reserved / in_transit / available / projected 为单据派生量，历史时点不可还原，返回 null；on_hand / frozen / qc / total_qty 已按 stock_transaction 重算',
       ]
     : [];
   return { list, page: result.page, warnings };

@@ -15,6 +15,8 @@ export interface StockRow {
   warehouse_type: string;
   on_hand: number;
   frozen: number;
+  qc: number;
+  total_qty: number;
   reserved: number | null;
   in_transit: number | null;
   available: number | null;
@@ -104,7 +106,10 @@ function filterParams(filters: QueryFilters): Record<string, unknown> {
 
 /**
  * 库存口径清单。当前时点读 stock_balance；指定 as_of 时从 stock_transaction 重算。
- * reserved / in_transit 是单据派生量，历史时点无法还原，仅在当前时点返回。
+ * 实物量（三状态独立成列）：on_hand = 仅 available 桶，frozen = 仅 frozen 桶，qc = 仅 qc 桶，
+ * total_qty = 三桶合计（账面物理量）。
+ * 单据派生量：reserved / in_transit 历史时点无法还原，仅在当前时点返回。
+ * available = on_hand − reserved；projected = on_hand + in_transit − reserved。
  */
 export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portAsInventory: boolean; asOf: string | null } {
   const db = getDb();
@@ -147,7 +152,8 @@ export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portA
     agg AS (
       SELECT product_id, warehouse_id,
              SUM(CASE WHEN stock_status = 'available' THEN qty ELSE 0 END) AS on_hand,
-             SUM(CASE WHEN stock_status IN ('frozen', 'qc') THEN qty ELSE 0 END) AS frozen
+             SUM(CASE WHEN stock_status = 'frozen' THEN qty ELSE 0 END) AS frozen,
+             SUM(CASE WHEN stock_status = 'qc' THEN qty ELSE 0 END) AS qc
         FROM physical GROUP BY product_id, warehouse_id
     ),
     reserved AS (${reservedCte}),
@@ -200,6 +206,7 @@ export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portA
               w.type AS warehouse_type,
               COALESCE(a.on_hand, 0) AS on_hand,
               COALESCE(a.frozen, 0) AS frozen,
+              COALESCE(a.qc, 0) AS qc,
               COALESCE(r.qty, 0) AS reserved,
               COALESCE(t.qty, 0) AS in_transit
        ${joins} ${where}
@@ -218,16 +225,20 @@ export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portA
     warehouse_type: string;
     on_hand: number;
     frozen: number;
+    qc: number;
     reserved: number;
     in_transit: number;
   }[];
 
   const list: StockRow[] = rows.map((row) => {
+    // 账面物理量：三状态桶合计（不含 reserved / in_transit 等单据派生量）
+    const total_qty = row.on_hand + row.frozen + row.qc;
     if (asOf) {
-      return { ...row, reserved: null, in_transit: null, available: null, projected: null };
+      return { ...row, total_qty, reserved: null, in_transit: null, available: null, projected: null };
     }
     return {
       ...row,
+      total_qty,
       available: row.on_hand - row.reserved,
       projected: row.on_hand + row.in_transit - row.reserved,
     };

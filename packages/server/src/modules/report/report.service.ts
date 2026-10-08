@@ -117,7 +117,7 @@ export function queryInventoryLedger(query: LedgerQuery): ReportPaged {
 
 // ---------- IF-R2 库存现状表 ----------
 
-/** 复用六项口径清单，追加金额列 on_hand_amount = on_hand × avg_cost */
+/** 复用库存口径清单（on_hand/frozen/qc/total_qty + reserved/in_transit/available/projected），追加金额列 on_hand_amount = on_hand × avg_cost */
 export function queryStockSnapshot(query: StockSnapshotQuery): ReportPaged {
   const result = queryStockList({
     page: query.page,
@@ -150,7 +150,7 @@ export function queryStockSnapshot(query: StockSnapshotQuery): ReportPaged {
   const warnings = [`port_stock_as_inventory=${result.portAsInventory}`];
   if (result.asOf) {
     warnings.push(
-      `历史时点（${result.asOf.slice(0, 10)}）仅支持 on_hand / frozen；reserved / in_transit / available / projected 依赖单据当时状态不可还原，返回 null；历史平均成本不可还原，avg_cost / on_hand_amount 亦为 null`,
+      `历史时点（${result.asOf.slice(0, 10)}）仅支持 on_hand / frozen / qc / total_qty；reserved / in_transit / available / projected 依赖单据当时状态不可还原，返回 null；历史平均成本不可还原，avg_cost / on_hand_amount 亦为 null`,
     );
   }
   return { list, page: result.page, warnings };

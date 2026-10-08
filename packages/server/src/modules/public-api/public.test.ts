@@ -42,11 +42,17 @@ function insertBom(parent: number, child: number, qtyPer: number, from: string, 
   ).run(parent, child, qtyPer, from, to, nowIso(), nowIso());
 }
 
-function addStock(productId: number, warehouseId: number, quantity: number, occurredAt: string): void {
+function addStock(
+  productId: number,
+  warehouseId: number,
+  quantity: number,
+  occurredAt: string,
+  stockStatus: 'available' | 'frozen' | 'qc' = 'available',
+): void {
   postMovement({
     productId,
     warehouseId,
-    stockStatus: 'available',
+    stockStatus,
     bizType: 'adjust',
     direction: 1,
     quantity,
@@ -185,8 +191,10 @@ describe('IF-2b BOM 多层展开', () => {
 });
 
 describe('IF-3 库存', () => {
-  it('当前时点六项口径：可用 / 预占 / 在途 / 预计可用', async () => {
+  it('当前时点：实物量三桶独立成列，派生量按口径自洽', async () => {
     addStock(fx.itemId, fx.warehouseId, 100, '2026-06-01T00:00:00.000Z');
+    addStock(fx.itemId, fx.warehouseId, 20, '2026-06-01T00:00:00.000Z', 'frozen');
+    addStock(fx.itemId, fx.warehouseId, 300, '2026-06-01T00:00:00.000Z', 'qc');
     makeConfirmedSales(30);
     makeConfirmedPurchase(20, '2026-06-02', '2026-06-30');
 
@@ -196,7 +204,9 @@ describe('IF-3 库存', () => {
       item_code: 'RM-001',
       warehouse_code: 'WH-01',
       on_hand: 100,
-      frozen: 0,
+      frozen: 20,
+      qc: 300,
+      total_qty: 420,
       reserved: 30,
       in_transit: 20,
       available: 70,
@@ -206,10 +216,15 @@ describe('IF-3 库存', () => {
 
   it('历史时点：物理量按流水重算，派生量为 null 且给出告警', async () => {
     addStock(fx.itemId, fx.warehouseId, 100, '2026-06-01T00:00:00.000Z');
+    addStock(fx.itemId, fx.warehouseId, 20, '2026-06-01T00:00:00.000Z', 'frozen');
+    addStock(fx.itemId, fx.warehouseId, 300, '2026-06-01T00:00:00.000Z', 'qc');
 
     const body = (await get('/api/v1/inventory?as_of=2026-07-01&item_code=RM-001')).json();
     expect(body.data[0]).toMatchObject({
       on_hand: 100,
+      frozen: 20,
+      qc: 300,
+      total_qty: 420,
       reserved: null,
       in_transit: null,
       available: null,

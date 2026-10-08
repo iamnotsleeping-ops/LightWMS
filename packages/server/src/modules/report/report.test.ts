@@ -192,8 +192,23 @@ describe('IF-R1 进销存明细账', () => {
 });
 
 describe('IF-R2 库存现状表', () => {
-  it('六项口径与金额列正确；asOf 时金额为 null 且给出告警', async () => {
+  it('实物量三桶独立成列、金额列正确；asOf 时金额为 null 且给出告警', async () => {
     addStock(100, 1, '2026-06-01T00:00:00.000Z', { unitCost: 500 });
+    for (const [status, qty] of [
+      ['frozen', 20],
+      ['qc', 300],
+    ] as const) {
+      postMovement({
+        productId: fx.itemId,
+        warehouseId: fx.warehouseId,
+        stockStatus: status,
+        bizType: 'adjust',
+        direction: 1,
+        quantity: qty,
+        unitCost: 500,
+        occurredAt: '2026-06-01T00:00:00.000Z',
+      });
+    }
 
     const current = (await get('/api/reports/stock-snapshot')).json();
     expect(current.page.total).toBe(1);
@@ -201,7 +216,9 @@ describe('IF-R2 库存现状表', () => {
       product_code: 'RM-001',
       warehouse_code: 'WH-01',
       on_hand: 100,
-      frozen: 0,
+      frozen: 20,
+      qc: 300,
+      total_qty: 420,
       avg_cost: 500,
       on_hand_amount: 50000,
     });
@@ -209,6 +226,9 @@ describe('IF-R2 库存现状表', () => {
     const historical = (await get('/api/reports/stock-snapshot?asOf=2026-07-01')).json();
     expect(historical.data[0]).toMatchObject({
       on_hand: 100,
+      frozen: 20,
+      qc: 300,
+      total_qty: 420,
       reserved: null,
       in_transit: null,
       available: null,

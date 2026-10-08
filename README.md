@@ -98,11 +98,13 @@ certification    └→    引用，不被业务改写
 - 可用量只统计 `available` 状态；`frozen` 与 `qc` 一律不计入。
 - 历史时点（`as_of`）一律从 `stock_transaction` 按 `occurred_at <= as_of` 重算，不用当前余额近似。
 
-数量口径：
+数量口径（实物量三状态独立成列，`total_qty` 为三桶合计）：
 
 ```text
-on_hand    = Σ(available 的 stock_balance.quantity)
-frozen     = Σ(frozen + qc 的数量)
+on_hand    = Σ(available 的数量)           -- 现有库存（仅可用桶）
+frozen     = Σ(frozen 的数量)              -- 冻结（仅冻结桶）
+qc         = Σ(qc 的数量)                  -- 待检（仅待检桶）
+total_qty  = on_hand + frozen + qc         -- 账面物理量（三桶合计）
 reserved   = 已确认未出库的销售订单数量
 in_transit = 采购在途 + 调拨在途
 available  = on_hand - reserved                  -- 可承诺量 ATP
@@ -146,7 +148,7 @@ curl "http://localhost:3100/api/v1/boms?as_of=2026-03-15"
 # FG-001 按需展开 10 台（多层 + 循环检测）
 curl "http://localhost:3100/api/v1/boms/FG-001/explode?qty=10"
 
-# 历史时点库存（reserved / in_transit / available / projected 历史不可还原，返回 null 并告警）
+# 历史时点库存（on_hand / frozen / qc / total_qty 按流水重算；reserved / in_transit / available / projected 历史不可还原，返回 null 并告警）
 curl "http://localhost:3100/api/v1/inventory?as_of=2026-03-15"
 
 # 采购在途 / 历史采购（提前期）/ 供应商提前期聚合
@@ -175,7 +177,7 @@ curl "http://localhost:3100/api/v1/openapi.json"
 
 ### 三条口径（重要）
 
-1. **历史时点派生量**：`reserved` / `in_transit` / `available` / `projected` 由销售单、采购/调拨单派生，冷却后无法从流水还原。指定 `as_of` 时这些字段返回 `null`，并在 `_warnings` 说明；`on_hand` / `frozen` 仍按流水精确重算。
+1. **历史时点派生量**：`reserved` / `in_transit` / `available` / `projected` 由销售单、采购/调拨单派生，冷却后无法从流水还原。指定 `as_of` 时这些字段返回 `null`，并在 `_warnings` 说明；`on_hand` / `frozen` / `qc` / `total_qty` 仍按流水精确重算。
 2. **在途 `as_of` 近似**：IF-4 在途按 `order_date <= as_of` 过滤（单据无「当日在途」快照），结果可能包含早于 `as_of` 已入库的行，`_warnings` 会提示。
 3. **提前期为整单口径**：库存流水不含 `line_no`，实际到货时刻只能还原到整单（`biz_type='purchase_in'` 的 `MIN/MAX occurred_at`），故 `lead_time_days` 为整单提前期，行级提前期不在本阶段范围。
 
@@ -267,8 +269,8 @@ draft 草稿 ──过账──→ posted 已过账
 
 库存口径说明：
 
-- `GET /api/inventory/stocks` 一次返回全部六项口径（`on_hand` / `frozen` / `reserved` / `in_transit` / `available` / `projected`），四口径切换由前端完成，避免死参数。
-- 传 `asOf`（`YYYY-MM-DD` 或 ISO 8601）时从 `stock_transaction` 重算实物量，此时 `reserved` / `in_transit` / `available` / `projected` 返回 `null`（依赖单据当时状态，不可还原），响应 `_warnings` 会回显该口径说明。
+- `GET /api/inventory/stocks` 一次返回全部实物量三桶（`on_hand` / `frozen` / `qc`）与派生量（`total_qty` / `reserved` / `in_transit` / `available` / `projected`），四口径切换由前端完成，避免死参数。
+- 传 `asOf`（`YYYY-MM-DD` 或 ISO 8601）时从 `stock_transaction` 重算实物量（`on_hand` / `frozen` / `qc` / `total_qty`），此时 `reserved` / `in_transit` / `available` / `projected` 返回 `null`（依赖单据当时状态，不可还原），响应 `_warnings` 会回显该口径说明。
 - 系统参数 `port_stock_as_inventory`（默认 `false`）在 P2 生效：为 `false` 时港口仓行不出现在库存清单中，其当前取值在响应 `_warnings` 回显。
 
 BOM 多版本与展开口径：
@@ -283,7 +285,7 @@ BOM 多版本与展开口径：
 报表与看板口径：
 
 - **进销存明细账**（`report.view`）：按「物料 × 仓库」统计区间收发。期初 = 区间前`direction × quantity`累加，入库/出库 = 区间内 `direction = ±1` 累加，期末 = 期初 + 入库 − 出库；金额列同理用流水 `unit_cost` 结转。**必须排除 `biz_type = 'status_change'`**——状态转移在同一事务内成对写「出 + 入」，计入会让入库、出库两栏同时虚增而净额不变。日期边界：`dateFrom` 取当日 `00:00:00`、`dateTo` 归一到当日末刻；缺省区间为本月 1 日 ~ 今日（服务端当日）。
-- **库存现状表**（`report.view`）：复用库存清单六项口径，追加金额列 `on_hand_amount = on_hand × avg_cost`（成本取 `stock_balance` 的「物料 × 仓库」维度 `avg_cost`）。指定 `asOf` 时历史成本不可还原，`avg_cost` / `on_hand_amount` 返回 `null` 并写入 `_warnings`（与 P7 历史口径一致）。
+- **库存现状表**（`report.view`）：复用库存清单实物量三桶（`on_hand` / `frozen` / `qc`）与派生量（`total_qty` / `reserved` / `in_transit` / `available` / `projected`），追加金额列 `on_hand_amount = on_hand × avg_cost`（成本取 `stock_balance` 的「物料 × 仓库」维度 `avg_cost`）。指定 `asOf` 时历史成本不可还原，`avg_cost` / `on_hand_amount` 返回 `null` 并写入 `_warnings`（与 P7 历史口径一致）。
 - **商品收发明细**（`report.view`）：逐笔流水，字段同库存流水，追加 `amount = quantity × unit_cost`。
 - **供应商提前期分析**（`report.view`）：沿用 P7「整单口径」——流水无行号，实际到货时刻取该单 `biz_type='purchase_in'` 流水的 `MAX occurred_at` 还原到整单。`lead_time_days = 实际到货日 − order_date`；`promised_lead_time_days = max(promised_date) − order_date`；`on_time = 实际到货日 ≤ max(promised_date)`；`on_time_rate = 准时单数 / 已到货单数`。仅统计有到货记录的供应商。
 - **首页看板**（`GET /api/dashboard/overview`，登录即可）：`kpi`（现存量 / 库存金额 / 启用物料数 / 在途量 / 预警数，遵循 `port_stock_as_inventory` 默认排除港口仓）、`trend`（近 30 个自然日逐日出入库，排除 `status_change`、无流水补 0 保证 30 点）、`alerts`（`below_min` 优先取前 10）、`todos`（采购草稿 / 待入库采购单 / 销售草稿 / 待出库销售单 / 在途调拨单计数）。

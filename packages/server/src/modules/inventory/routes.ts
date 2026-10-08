@@ -67,7 +67,7 @@ export function registerInventoryRoutes(app: FastifyInstance): void {
     const warnings = [`port_stock_as_inventory=${portAsInventory}`];
     if (asOf) {
       warnings.push(
-        `历史时点（${asOf}）仅支持实物量口径 on_hand / frozen；reserved / in_transit / available / projected 依赖单据当时状态、不可还原，返回 null`,
+        `历史时点（${asOf}）仅支持实物量口径 on_hand / frozen / qc / total_qty；reserved / in_transit / available / projected 依赖单据当时状态、不可还原，返回 null`,
       );
     }
     return okPage(list, page, warnings);

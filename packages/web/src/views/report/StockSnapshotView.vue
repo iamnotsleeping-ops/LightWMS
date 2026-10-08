@@ -50,6 +50,9 @@
       <el-table-column label="冻结量" width="110" align="right">
         <template #default="{ row }">{{ formatQty(row.frozen, row.qty_precision) }}</template>
       </el-table-column>
+      <el-table-column label="待检量" width="110" align="right">
+        <template #default="{ row }">{{ formatQty(row.qc, row.qty_precision) }}</template>
+      </el-table-column>
       <el-table-column label="占用（销售）" width="120" align="right">
         <template #default="{ row }">{{ formatQty(row.reserved, row.qty_precision) }}</template>
       </el-table-column>
@@ -96,6 +99,7 @@ interface SnapshotRow {
   warehouse_name: string;
   on_hand: number;
   frozen: number;
+  qc: number;
   reserved: number | null;
   in_transit: number | null;
   available: number | null;
