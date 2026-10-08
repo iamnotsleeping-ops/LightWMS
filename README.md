@@ -145,25 +145,25 @@ curl "http://localhost:3100/api/v1/items?page=1&page_size=5"
 # 指定日期生效的多版本 BOM
 curl "http://localhost:3100/api/v1/boms?as_of=2026-03-15"
 
-# FG-001 按需展开 10 台（多层 + 循环检测）
-curl "http://localhost:3100/api/v1/boms/FG-001/explode?qty=10"
+# FG-1001 按需展开 10 台（多层 + 循环检测）
+curl "http://localhost:3100/api/v1/boms/FG-1001/explode?qty=10"
 
 # 历史时点库存（on_hand / frozen / qc / total_qty 按流水重算；reserved / in_transit / available / projected 历史不可还原，返回 null 并告警）
 curl "http://localhost:3100/api/v1/inventory?as_of=2026-03-15"
 
 # 采购在途 / 历史采购（提前期）/ 供应商提前期聚合
 curl "http://localhost:3100/api/v1/in-transit?status=confirmed,partial"
-curl "http://localhost:3100/api/v1/purchase-history?supplier_code=SU-01"
-curl "http://localhost:3100/api/v1/suppliers/SU-01/lead-time-stats"
+curl "http://localhost:3100/api/v1/purchase-history?supplier_code=SU-1001"
+curl "http://localhost:3100/api/v1/suppliers/SU-1001/lead-time-stats"
 
 # 销售订单行 / 仓库主数据（unshipped = quantity − shipped_qty − cancelled_qty；
 #   customer_name 按客户名称精确过滤，order_date 按订单日期精确匹配，
 #   date_from、date_to 按「要求交期」过滤）
 curl "http://localhost:3100/api/v1/sales-orders?status=confirmed,partial"
-curl "http://localhost:3100/api/v1/sales-orders?order_no=SO-20260101-0001&item_code=FG-1001"
-curl "http://localhost:3100/api/v1/sales-orders?warehouse_code=WH-01&order_date=2026-01-01"
+curl "http://localhost:3100/api/v1/sales-orders?order_no=SO-20260918-0001&item_code=FG-1001"
+curl "http://localhost:3100/api/v1/sales-orders?warehouse_code=WH-02&order_date=2026-09-18"
 curl "http://localhost:3100/api/v1/sales-orders?customer_name=华东经销"
-curl "http://localhost:3100/api/v1/sales-orders?customer_code=CU-1001&date_from=2026-01-01&date_to=2026-12-31"
+curl "http://localhost:3100/api/v1/sales-orders?customer_code=CU-2001&date_from=2026-01-01&date_to=2026-12-31"
 curl "http://localhost:3100/api/v1/warehouses?type=warehouse"
 
 # CSV 导出（不套信封，带 BOM；有告警看响应头 X-Warnings）

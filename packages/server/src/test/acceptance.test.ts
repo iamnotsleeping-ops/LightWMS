@@ -133,7 +133,7 @@ describe('P9 验收 · 全链路', () => {
     expect(childCodes).toContain('RM-3003');
   });
 
-  it('库存引擎（P2）：六项口径非空，存在 frozen / qc 桶，余额与流水净额一致', () => {
+  it('库存引擎（P2）：八列口径非空，存在 frozen / qc 桶，余额与流水净额一致', () => {
     const stocks = (
       db.prepare(
         `SELECT SUM(quantity) AS on_hand FROM stock_balance WHERE stock_status = 'available'`,
