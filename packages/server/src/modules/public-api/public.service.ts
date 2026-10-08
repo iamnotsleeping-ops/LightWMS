@@ -451,7 +451,9 @@ export function supplierLeadTimeStats(code: string, query: PublicLeadTimeStatsQu
 
 /**
  * 行级明细：一行 = 销售单的一行物料。
- * 字段口径：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 数量 / 要求交期 / 订单状态。
+ * 字段口径：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。
+ * 未出库量 = quantity − shipped_qty − cancelled_qty。
+ * `customer_name` 按客户名称精确过滤（返回仍只给客户编码）；`order_date` 按订单日期精确匹配；
  * `date_from`、`date_to` 按「要求交期」（`due_date`）过滤。
  */
 export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPaged {
@@ -467,9 +469,21 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
     where.push('c.code = ?');
     params.push(query.customer_code);
   }
+  if (query.customer_name) {
+    where.push('c.name = ?');
+    params.push(query.customer_name);
+  }
   if (query.item_code) {
     where.push('i.code = ?');
     params.push(query.item_code);
+  }
+  if (query.warehouse_code) {
+    where.push('w.code = ?');
+    params.push(query.warehouse_code);
+  }
+  if (query.order_date) {
+    where.push('so.order_date = ?');
+    params.push(query.order_date);
   }
   if (query.status) {
     const statuses = parseStatusList(query.status, SALES_ORDER_STATUSES, []);
@@ -495,7 +509,8 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
   const base = `FROM sales_order_item soi
        JOIN sales_order so ON so.id = soi.order_id
        JOIN partner c ON c.id = so.customer_id
-       JOIN item i ON i.id = soi.product_id`;
+       JOIN item i ON i.id = soi.product_id
+       JOIN warehouse w ON w.id = soi.warehouse_id`;
 
   const { total } = db.prepare(`SELECT COUNT(*) AS total ${base} ${clause}`).get(...params) as {
     total: number;
@@ -503,7 +518,10 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
   const rows = db
     .prepare(
       `SELECT so.order_no, soi.line_no, c.code AS customer_code,
-              i.code AS item_code, soi.quantity, soi.due_date, so.status
+              i.code AS item_code, w.code AS warehouse_code,
+              soi.quantity, soi.shipped_qty,
+              soi.quantity - soi.shipped_qty - soi.cancelled_qty AS unshipped,
+              soi.due_date, so.status
        ${base} ${clause} ORDER BY so.order_no, soi.line_no LIMIT ? OFFSET ?`,
     )
     .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];

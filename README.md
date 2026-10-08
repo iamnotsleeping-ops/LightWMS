@@ -122,7 +122,7 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 | IF-4 | `GET /api/v1/in-transit?as_of=` | 在途 / 采购订单 |
 | IF-5 | `GET /api/v1/purchase-history` | 历史采购订单（提前期） |
 | IF-5b | `GET /api/v1/suppliers/{code}/lead-time-stats` | 供应商提前期聚合 |
-| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 客户编码 / 物料编码 / 数量 / 要求交期 / 订单状态） |
+| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态） |
 | IF-7 | `GET /api/v1/warehouses` | 工厂 / 仓库主数据 |
 
 ### 约定
@@ -154,9 +154,13 @@ curl "http://localhost:3100/api/v1/in-transit?status=confirmed,partial"
 curl "http://localhost:3100/api/v1/purchase-history?supplier_code=SU-01"
 curl "http://localhost:3100/api/v1/suppliers/SU-01/lead-time-stats"
 
-# 销售订单行 / 仓库主数据（销售单的 date_from、date_to 按「要求交期」过滤）
+# 销售订单行 / 仓库主数据（unshipped = quantity − shipped_qty − cancelled_qty；
+#   customer_name 按客户名称精确过滤，order_date 按订单日期精确匹配，
+#   date_from、date_to 按「要求交期」过滤）
 curl "http://localhost:3100/api/v1/sales-orders?status=confirmed,partial"
 curl "http://localhost:3100/api/v1/sales-orders?order_no=SO-20260101-0001&item_code=FG-1001"
+curl "http://localhost:3100/api/v1/sales-orders?warehouse_code=WH-01&order_date=2026-01-01"
+curl "http://localhost:3100/api/v1/sales-orders?customer_name=华东经销"
 curl "http://localhost:3100/api/v1/sales-orders?customer_code=CU-1001&date_from=2026-01-01&date_to=2026-12-31"
 curl "http://localhost:3100/api/v1/warehouses?type=warehouse"
 

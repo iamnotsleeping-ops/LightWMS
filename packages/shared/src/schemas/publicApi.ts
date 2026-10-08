@@ -110,13 +110,19 @@ export const publicSupplierParamSchema = z.object({
 });
 
 // ---------- IF-6 销售订单行 ----------
-/** 返回行级明细；`date_from` / `date_to` 按「要求交期」（due_date）过滤 */
+/**
+ * 返回行级明细；`customer_name` 按客户名称精确过滤（返回仍只给客户编码），
+ * `order_date` 按订单日期精确匹配，`date_from` / `date_to` 按「要求交期」（due_date）过滤。
+ */
 export const publicSalesOrdersQuerySchema = publicPaginationSchema.extend({
   keyword: optionalText(100),
   order_no: optionalText(50),
   customer_code: optionalText(50),
+  customer_name: optionalText(100),
   item_code: optionalText(50),
+  warehouse_code: optionalText(50),
   status: optionalText(100),
+  order_date: optionalDate,
   date_from: optionalDate,
   date_to: optionalDate,
   format: publicFormatSchema,

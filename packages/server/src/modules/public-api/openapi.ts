@@ -59,7 +59,11 @@ const keywordParam = {
   schema: { type: 'string' },
 };
 
-const envelopeResponse = (dataDescription: string) => ({
+/**
+ * 统一信封样例：`data` 传入该接口的真实响应片段（字段名与类型与线上一致），
+ * 便于下游直接按样例生成客户端 / 做断言。`paged=true` 时补上 `page`（仅分页接口有）。
+ */
+const envelopeResponse = (data: unknown, paged = false) => ({
   description: '统一信封；format=csv 时返回 text/csv（不套信封）',
   headers: {
     'X-Warnings': {
@@ -70,7 +74,13 @@ const envelopeResponse = (dataDescription: string) => ({
   content: {
     'application/json': {
       schema: { $ref: '#/components/schemas/Envelope' },
-      example: { code: 0, message: 'ok', data: dataDescription, _warnings: [] },
+      example: {
+        code: 0,
+        message: 'ok',
+        data,
+        ...(paged ? { page: { page: 1, pageSize: 100, total: 9 } } : {}),
+        _warnings: [],
+      },
     },
   },
 });
@@ -117,7 +127,29 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-1 物料主数据',
         parameters: [keywordParam, codeParam('category_code', 'CAT-01'), FORMAT_PARAM, PAGE_PARAM, PAGE_SIZE_PARAM],
-        responses: { '200': envelopeResponse('[物料]') },
+        responses: {
+          '200': envelopeResponse(
+            [
+              {
+                id: 1,
+                code: 'FG-1001',
+                name: '智能网关 A',
+                base_unit: 'EA',
+                qty_precision: 0,
+                category_code: 'CAT-FG',
+                category_name: '成品',
+                capacity_group: null,
+                is_active: 1,
+                inspection_required: 0,
+                batch_managed: 0,
+                serial_managed: 0,
+                created_at: '2026-10-08T02:45:18.125Z',
+                updated_at: '2026-10-08T02:45:18.125Z',
+              },
+            ],
+            true,
+          ),
+        },
       },
     },
     '/boms': {
@@ -131,7 +163,23 @@ export const openapiDocument = {
           keywordParam,
           FORMAT_PARAM,
         ],
-        responses: { '200': envelopeResponse('[BOM 版本]（不分页）') },
+        responses: {
+          '200': envelopeResponse([
+            {
+              id: 2,
+              parent_item_code: 'FG-1001',
+              parent_item_name: '智能网关 A',
+              parent_base_unit: 'EA',
+              child_item_code: 'RM-3002',
+              child_item_name: '铝合金外壳',
+              child_base_unit: 'EA',
+              qty_per: 1,
+              scrap_rate: 0,
+              effective_from: '2026-01-01',
+              effective_to: '2026-06-30',
+            },
+          ]),
+        },
       },
     },
     '/boms/{itemCode}/explode': {
@@ -157,7 +205,31 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
-          '200': envelopeResponse('{ as_of, root, lines, cycles }'),
+          '200': envelopeResponse({
+            as_of: '2026-10-08',
+            root: {
+              item_code: 'FG-1001',
+              item_name: '智能网关 A',
+              base_unit: 'EA',
+              qty_precision: 0,
+              required_qty: 1,
+            },
+            lines: [
+              {
+                level: 1,
+                item_code: 'RM-3002',
+                item_name: '铝合金外壳',
+                base_unit: 'EA',
+                qty_precision: 0,
+                qty_per: 1,
+                scrap_rate: 0,
+                required_qty: 1,
+                is_leaf: true,
+                cyclic: false,
+              },
+            ],
+            cycles: [],
+          }),
           '404': { description: '物料不存在' },
         },
       },
@@ -175,7 +247,28 @@ export const openapiDocument = {
           PAGE_PARAM,
           PAGE_SIZE_PARAM,
         ],
-        responses: { '200': envelopeResponse('[库存（六项口径）]') },
+        responses: {
+          '200': envelopeResponse(
+            [
+              {
+                item_code: 'FG-1001',
+                item_name: '智能网关 A',
+                base_unit: 'EA',
+                qty_precision: 0,
+                warehouse_code: 'WH-02',
+                warehouse_name: '成品仓',
+                warehouse_type: 'warehouse',
+                on_hand: 38,
+                frozen: 0,
+                reserved: 25,
+                in_transit: 0,
+                available: 13,
+                projected: 13,
+              },
+            ],
+            true,
+          ),
+        },
       },
     },
     '/in-transit': {
@@ -197,7 +290,31 @@ export const openapiDocument = {
           PAGE_PARAM,
           PAGE_SIZE_PARAM,
         ],
-        responses: { '200': envelopeResponse('[采购在途行]') },
+        responses: {
+          '200': envelopeResponse(
+            [
+              {
+                order_no: 'PO-20261005-0001',
+                order_date: '2026-10-05',
+                status: 'confirmed',
+                supplier_code: 'SU-1002',
+                supplier_name: '精密结构件',
+                line_no: 1,
+                item_code: 'RM-3002',
+                item_name: '铝合金外壳',
+                base_unit: 'EA',
+                warehouse_code: 'WH-01',
+                warehouse_name: '原料仓',
+                quantity: 500,
+                received_qty: 0,
+                cancelled_qty: 0,
+                in_transit: 500,
+                promised_date: '2026-10-13',
+              },
+            ],
+            true,
+          ),
+        },
       },
     },
     '/purchase-history': {
@@ -213,7 +330,32 @@ export const openapiDocument = {
           PAGE_PARAM,
           PAGE_SIZE_PARAM,
         ],
-        responses: { '200': envelopeResponse('[采购历史行（提前期为整单口径）]') },
+        responses: {
+          '200': envelopeResponse(
+            [
+              {
+                order_no: 'PO-20260926-0001',
+                order_date: '2026-09-26',
+                status: 'partial',
+                supplier_code: 'SU-1003',
+                supplier_name: '新能源电池',
+                line_no: 1,
+                item_code: 'RM-3003',
+                item_name: '锂离子电芯',
+                quantity: 400,
+                received_qty: 150,
+                unit_price: 2480,
+                promised_date: '2026-10-02',
+                first_received_at: '2026-10-02T02:00:00.000Z',
+                last_received_at: '2026-10-02T02:00:00.000Z',
+                lead_time_days: 6,
+                promised_lead_time_days: 6,
+                on_time: true,
+              },
+            ],
+            true,
+          ),
+        },
       },
     },
     '/suppliers/{code}/lead-time-stats': {
@@ -234,7 +376,19 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
-          '200': envelopeResponse('{ supplier_code, order_count, avg_lead_time_days, on_time_rate, ... }'),
+          '200': envelopeResponse({
+            supplier_code: 'SU-1001',
+            supplier_name: '华芯电子',
+            order_count: 1,
+            line_count: 1,
+            received_line_count: 1,
+            avg_lead_time_days: 6,
+            min_lead_time_days: 6,
+            max_lead_time_days: 6,
+            avg_promised_lead_time_days: 7,
+            on_time_rate: 1,
+            last_order_date: '2026-09-13',
+          }),
           '404': { description: '供应商不存在' },
         },
       },
@@ -244,12 +398,15 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-6 销售订单行',
         description:
-          '一行 = 销售单的一行物料。字段：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 数量 / 要求交期 / 订单状态。',
+          '一行 = 销售单的一行物料。字段：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
+          '未出库量 = quantity − shipped_qty − cancelled_qty。',
         parameters: [
           keywordParam,
           codeParam('order_no', 'SO-20260101-0001'),
           codeParam('customer_code', 'CU-01'),
+          codeParam('customer_name', '华东经销'),
           codeParam('item_code', 'FG-1001'),
+          codeParam('warehouse_code', 'WH-01'),
           {
             name: 'status',
             in: 'query',
@@ -257,6 +414,7 @@ export const openapiDocument = {
             description: '逗号分隔多值',
             schema: { type: 'string', example: 'confirmed,partial' },
           },
+          { ...dateParam('order_date'), description: '订单日期，精确匹配（YYYY-MM-DD）' },
           { ...dateParam('date_from'), description: '要求交期起（YYYY-MM-DD）' },
           { ...dateParam('date_to'), description: '要求交期止（YYYY-MM-DD）' },
           FORMAT_PARAM,
@@ -265,7 +423,21 @@ export const openapiDocument = {
         ],
         responses: {
           '200': envelopeResponse(
-            '[{ order_no, line_no, customer_code, item_code, quantity, due_date, status }]',
+            [
+              {
+                order_no: 'SO-20260918-0001',
+                line_no: 1,
+                customer_code: 'CU-2001',
+                item_code: 'FG-1001',
+                warehouse_code: 'WH-02',
+                quantity: 50,
+                shipped_qty: 50,
+                unshipped: 0,
+                due_date: '2026-09-28',
+                status: 'shipped',
+              },
+            ],
+            true,
           ),
         },
       },
@@ -291,7 +463,20 @@ export const openapiDocument = {
           },
           FORMAT_PARAM,
         ],
-        responses: { '200': envelopeResponse('[仓库]（不分页）') },
+        responses: {
+          '200': envelopeResponse([
+            {
+              code: 'PLANT-01',
+              name: '总装厂',
+              type: 'plant',
+              parent_code: null,
+              parent_name: null,
+              is_active: 1,
+              created_at: '2026-10-08T02:45:18.125Z',
+              updated_at: '2026-10-08T02:45:18.125Z',
+            },
+          ]),
+        },
       },
     },
   },

@@ -103,9 +103,10 @@ const interfaces: ApiDoc[] = [
     ifNo: 'IF-6',
     path: '/sales-orders',
     params:
-      'keyword, order_no, customer_code, item_code, status, date_from, date_to, page, page_size, format',
-    returns: '销售订单行数组（订单号/行号/客户编码/物料编码/数量/要求交期/状态）+ page',
-    curl: `${base} ${apiBase}/sales-orders?order_no=SO-20260101-0001&item_code=FG-1001`,
+      'keyword, order_no, customer_code, customer_name, item_code, warehouse_code, status, order_date, date_from, date_to, page, page_size, format',
+    returns:
+      '销售订单行数组（订单号/行号/客户编码/物料编码/仓库编码/数量/已出库量/未出库量/要求交期/状态）+ page',
+    curl: `${base} ${apiBase}/sales-orders?warehouse_code=WH-01&order_date=2026-01-01`,
   },
   {
     ifNo: 'IF-7',

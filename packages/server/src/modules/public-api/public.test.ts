@@ -297,7 +297,7 @@ describe('IF-5b 供应商提前期聚合', () => {
 });
 
 describe('IF-6 销售订单行', () => {
-  it('返回行级字段（订单号/行号/客户编码/物料编码/数量/要求交期/状态）', async () => {
+  it('返回行级字段（订单号/行号/客户编码/物料编码/仓库编码/数量/已出库量/未出库量/要求交期/状态）', async () => {
     makeConfirmedSales(25);
 
     const body = (await get('/api/v1/sales-orders')).json();
@@ -307,7 +307,10 @@ describe('IF-6 销售订单行', () => {
       line_no: 1,
       customer_code: 'CU-01',
       item_code: 'RM-001',
+      warehouse_code: 'WH-01',
       quantity: 25,
+      shipped_qty: 0,
+      unshipped: 25, // quantity − shipped_qty − cancelled_qty
       due_date: '2026-01-20',
       status: 'confirmed',
     });
@@ -316,7 +319,7 @@ describe('IF-6 销售订单行', () => {
     expect(body.data[0]).not.toHaveProperty('total_amount');
   });
 
-  it('order_no / customer_code / item_code / status 多值 / 要求交期区间过滤', async () => {
+  it('order_no / customer_code / customer_name / item_code / warehouse_code / status 多值 / 订单日期 / 要求交期区间过滤', async () => {
     const orderId = makeConfirmedSales(25);
     const { order_no } = db
       .prepare('SELECT order_no FROM sales_order WHERE id = ?')
@@ -328,11 +331,21 @@ describe('IF-6 销售订单行', () => {
     expect((await get('/api/v1/sales-orders?customer_code=CU-01')).json().page.total).toBe(1);
     expect((await get('/api/v1/sales-orders?customer_code=NOPE')).json().page.total).toBe(0);
 
+    expect((await get('/api/v1/sales-orders?customer_name=测试客户')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?customer_name=不存在客户')).json().page.total).toBe(0);
+
     expect((await get('/api/v1/sales-orders?item_code=RM-001')).json().page.total).toBe(1);
     expect((await get('/api/v1/sales-orders?item_code=NOPE')).json().page.total).toBe(0);
 
+    expect((await get('/api/v1/sales-orders?warehouse_code=WH-01')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?warehouse_code=NOPE')).json().page.total).toBe(0);
+
     expect((await get('/api/v1/sales-orders?status=confirmed,partial')).json().page.total).toBe(1);
     expect((await get('/api/v1/sales-orders?status=draft')).json().page.total).toBe(0);
+
+    // order_date 按订单日期（2026-01-01）精确匹配
+    expect((await get('/api/v1/sales-orders?order_date=2026-01-01')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?order_date=2026-01-02')).json().page.total).toBe(0);
 
     // date_from / date_to 按要求交期（due_date=2026-01-20）过滤
     expect(
@@ -394,6 +407,27 @@ describe('OpenAPI 文档', () => {
     const doc = res.json();
     expect(doc.openapi.startsWith('3.1')).toBe(true);
     expect(Object.keys(doc.paths)).toHaveLength(9);
+  });
+
+  it('9 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
+    const doc = (await get('/api/v1/openapi.json')).json();
+    type Doc = {
+      get: {
+        parameters: { name: string }[];
+        responses: Record<string, { content: Record<string, { example: { data: unknown; page?: unknown } }> }>;
+      };
+    };
+    const entries = Object.entries(doc.paths) as [string, Doc][];
+
+    for (const [path, item] of entries) {
+      const { data, page } = item.get.responses['200'].content['application/json'].example;
+      expect(typeof data, path).not.toBe('string');
+      expect(data !== null && typeof data === 'object', path).toBe(true);
+
+      // 分页接口必须给出 page 样例；非分页接口不应出现 page
+      const paged = item.get.parameters.some((p) => p.name === 'page_size');
+      expect(Boolean(page), `${path} 的 page 样例`).toBe(paged);
+    }
   });
 });
 
