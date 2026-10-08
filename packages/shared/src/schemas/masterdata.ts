@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { WAREHOUSE_TYPES, PARTNER_TYPES } from '../constants';
+import { WAREHOUSE_TYPES, PARTNER_TYPES, BASE_UNITS } from '../constants';
 import { boolIntSchema, dateSchema, optionalText, paginationQuerySchema } from './common';
 
 const refId = z.number().int().positive().nullable().optional();
@@ -21,7 +21,7 @@ export type CategoryUpdateBody = z.infer<typeof categoryUpdateBodySchema>;
 export const itemBodySchema = z.object({
   code: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(200),
-  base_unit: z.string().trim().min(1).max(20),
+  base_unit: z.enum(BASE_UNITS),
   category_id: refId,
   is_active: boolIntSchema.optional(),
   qty_precision: z.number().int().min(0).max(6).optional(),

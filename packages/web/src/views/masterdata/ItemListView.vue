@@ -78,7 +78,14 @@
         <el-input v-model="form.name" maxlength="200" />
       </el-form-item>
       <el-form-item label="基本单位" required>
-        <el-input v-model="form.base_unit" maxlength="20" placeholder="件 / 千克 / 米" />
+        <el-select v-model="form.base_unit" placeholder="请选择单位">
+          <el-option
+            v-for="unit in BASE_UNITS"
+            :key="unit"
+            :label="`${unit} · ${BASE_UNIT_LABELS[unit]}`"
+            :value="unit"
+          />
+        </el-select>
       </el-form-item>
       <el-form-item label="物料分类">
         <el-select v-model="form.category_id" clearable placeholder="无">
@@ -124,7 +131,7 @@
 </template>
 
 <script setup lang="ts">
-import { PERMISSIONS } from '@light-erp/shared';
+import { PERMISSIONS, BASE_UNITS, BASE_UNIT_LABELS } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';

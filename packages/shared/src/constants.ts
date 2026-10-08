@@ -109,6 +109,18 @@ export type PartnerType = (typeof PARTNER_TYPES)[number];
 export const WAREHOUSE_TYPES = ['plant', 'warehouse', 'port'] as const;
 export type WarehouseType = (typeof WAREHOUSE_TYPES)[number];
 
+/** 数量单位（物料基本单位）：EA 件类 / KG 千克 / M 米 / L 升 / ROLL 卷 */
+export const BASE_UNITS = ['EA', 'KG', 'M', 'L', 'ROLL'] as const;
+export type BaseUnit = (typeof BASE_UNITS)[number];
+
+export const BASE_UNIT_LABELS: Record<BaseUnit, string> = {
+  EA: '件/个',
+  KG: '千克',
+  M: '米',
+  L: '升',
+  ROLL: '卷',
+};
+
 /** 单号前缀，配合 YYYYMMDD-NNNN 生成，如 PO-20261007-0001 */
 export const DOC_TYPE_PREFIX = {
   purchase: 'PO',

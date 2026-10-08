@@ -27,13 +27,13 @@ export function seedFixtures(db: Db): Fixtures {
       `INSERT INTO item (code, name, base_unit, is_active, qty_precision, inspection_required, created_at, updated_at)
        VALUES (?, ?, ?, 1, 0, 0, ?, ?)`,
     )
-    .run('RM-001', '测试零件', '件', now, now);
+    .run('RM-001', '测试零件', 'EA', now, now);
   const portItem = db
     .prepare(
       `INSERT INTO item (code, name, base_unit, is_active, qty_precision, inspection_required, created_at, updated_at)
        VALUES (?, ?, ?, 1, 0, 0, ?, ?)`,
     )
-    .run('FG-001', '测试成品', '件', now, now);
+    .run('FG-001', '测试成品', 'EA', now, now);
   const warehouse = db
     .prepare(
       `INSERT INTO warehouse (code, name, type, is_active, created_at, updated_at)

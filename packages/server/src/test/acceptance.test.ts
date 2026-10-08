@@ -85,7 +85,7 @@ describe('P9 种子 · 幂等与重建', () => {
     db.prepare('INSERT INTO item (code, name, base_unit, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)').run(
       'TMP-X',
       '临时物料',
-      '件',
+      'EA',
       new Date().toISOString(),
       new Date().toISOString(),
     );

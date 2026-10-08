@@ -29,7 +29,7 @@ function insertItem(code: string, name: string): number {
     db
       .prepare(
         `INSERT INTO item (code, name, base_unit, is_active, qty_precision, inspection_required, created_at, updated_at)
-         VALUES (?, ?, '件', 1, 0, 0, ?, ?)`,
+         VALUES (?, ?, 'EA', 1, 0, 0, ?, ?)`,
       )
       .run(code, name, nowIso(), nowIso()).lastInsertRowid,
   );

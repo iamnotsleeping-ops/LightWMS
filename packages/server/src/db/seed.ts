@@ -172,15 +172,15 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
        VALUES (?, ?, ?, ?, 1, 0, ?, 0, 0, ?, ?)`,
     );
     const items: [string, string, string, string, number][] = [
-      ['FG-1001', '智能网关 A', '件', 'CAT-FG', 0],
-      ['FG-1002', '智能网关 B', '件', 'CAT-FG', 0],
-      ['SF-2001', '主控板组件', '件', 'CAT-SF', 0],
-      ['RM-3001', '主控芯片', '只', 'CAT-RM', 1],
-      ['RM-3002', '铝合金外壳', '个', 'CAT-RM', 0],
-      ['RM-3003', '锂离子电芯', '只', 'CAT-RM', 1],
-      ['RM-3004', '7 寸显示屏', '块', 'CAT-RM', 0],
-      ['PK-4001', '彩盒', '个', 'CAT-PK', 0],
-      ['PK-4002', '说明书', '张', 'CAT-PK', 0],
+      ['FG-1001', '智能网关 A', 'EA', 'CAT-FG', 0],
+      ['FG-1002', '智能网关 B', 'EA', 'CAT-FG', 0],
+      ['SF-2001', '主控板组件', 'EA', 'CAT-SF', 0],
+      ['RM-3001', '主控芯片', 'EA', 'CAT-RM', 1],
+      ['RM-3002', '铝合金外壳', 'EA', 'CAT-RM', 0],
+      ['RM-3003', '锂离子电芯', 'EA', 'CAT-RM', 1],
+      ['RM-3004', '7 寸显示屏', 'EA', 'CAT-RM', 0],
+      ['PK-4001', '彩盒', 'EA', 'CAT-PK', 0],
+      ['PK-4002', '说明书', 'EA', 'CAT-PK', 0],
     ];
     for (const [code, name, unit, category, inspection] of items) {
       itemIds[code] = Number(
