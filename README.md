@@ -181,6 +181,48 @@ curl "http://localhost:3100/api/v1/openapi.json"
 2. **在途 `as_of` 近似**：IF-4 在途按 `order_date <= as_of` 过滤（单据无「当日在途」快照），结果可能包含早于 `as_of` 已入库的行，`_warnings` 会提示。
 3. **提前期为整单口径**：库存流水不含 `line_no`，实际到货时刻只能还原到整单（`biz_type='purchase_in'` 的 `MIN/MAX occurred_at`），故 `lead_time_days` 为整单提前期，行级提前期不在本阶段范围。
 
+### IF-6 销售订单行 · 字段说明
+
+一行 = 销售单的一行物料，按 `order_no + line_no` 唯一。单据维度的字段（`order_date` / `customer_code` / `status`）在同一张单的每一行重复下发，便于下游按行直接消费，无需回查单据。
+
+**查询参数**（全部可选；除 `keyword` 为模糊匹配外均为精确匹配）：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `keyword` | string | 模糊匹配 `order_no` / `customer_code` / `item_code` / `item_name` |
+| `order_no` | string | 订单号，精确匹配 |
+| `customer_code` | string | 客户编码，精确匹配 |
+| `customer_name` | string | 客户名称，精确匹配；**仅作过滤条件**，返回仍只给 `customer_code` |
+| `item_code` | string | 物料编码，精确匹配 |
+| `warehouse_code` | string | 发货仓库编码，精确匹配 |
+| `status` | string | 逗号分隔多值，枚举 `draft / confirmed / partial / shipped / cancelled`（如 `confirmed,partial`） |
+| `order_date` | string | 按订单日期精确匹配单日（`YYYY-MM-DD`） |
+| `date_from` / `date_to` | string | 按「要求交期」`due_date` 过滤（`YYYY-MM-DD`，双端含边界） |
+| `page` / `page_size` / `format` | - | 通用分页与输出格式参数 |
+
+**返回字段**（`data[]` 每行）：
+
+| 字段 | 类型 | 维度 | 说明 |
+| --- | --- | --- | --- |
+| `order_no` | string | 单据 | 订单号 |
+| `line_no` | number | 行 | 行号（单内唯一，从 1 递增） |
+| `order_date` | string | 单据 | 订单日期（`YYYY-MM-DD`） |
+| `customer_code` | string | 单据 | 客户编码（客户名称已脱敏，恒不返回） |
+| `item_code` | string | 行 | 物料编码 |
+| `warehouse_code` | string | 行 | 发货仓库编码 |
+| `quantity` | number | 行 | 订单数量（下单量，不随出库变化） |
+| `shipped_qty` | number | 行 | 已出库量 |
+| `unshipped` | number | 行 | 未出库量 = `quantity − shipped_qty − cancelled_qty` |
+| `due_date` | string | 行 | 要求交期（`YYYY-MM-DD`） |
+| `status` | string | 单据 | 订单状态（同上枚举） |
+
+**口径说明**：
+
+- `order_date` 为单据维度（同单各行同值），同时支持「作为过滤参数（精确匹配单日）」与「作为返回字段」两种用法；下游要按订单日期分组聚合时可直接取该列，无需回查销售单。
+- 本接口仅返回 `customer_code`，**不返回客户名称与任何金额**；`customer_name` 只能作为过滤条件。
+- 无 `as_of` 参数：`shipped_qty` / `unshipped` / `status` 取**当前值**，历史进度不可还原。
+- `data` 带 `page`；`format=csv` 时列序与上表字段顺序一致，表头含 `order_date`。
+
 ## 业务接口（内部，需登录 + 权限）
 
 统一信封 `{ code, message, data, page? }`，`code=0` 为成功；分页参数 `page` / `pageSize`。
