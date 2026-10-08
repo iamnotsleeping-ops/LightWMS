@@ -52,7 +52,7 @@ pnpm typecheck      # 全仓类型检查
 - JWT 有效期 8h，走 `Authorization: Bearer`，前端存 `localStorage`；不做 refresh token 与登出黑名单。
 - **无角色用户登录后被拒绝进入**，提示「未授权，请联系管理员分配角色」。
 - 权限码格式 `模块.资源.动作`（如 `masterdata.item.create`），内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。
-- 对外 7 个只读接口（`/api/v1/*`）**不加鉴权**。
+- 对外 9 个只读数据接口（`/api/v1/*`）**不加鉴权**，另有 1 个文档接口 `GET /api/v1/openapi.json`。
 
 ## 目录结构
 
@@ -237,7 +237,7 @@ curl "http://localhost:3100/api/v1/openapi.json"
 | 往来单位 | `GET/POST /api/masterdata/partners`、`PATCH/DELETE /api/masterdata/partners/:id` |
 | 仓库 | `GET/POST /api/masterdata/warehouses`、`PATCH/DELETE /api/masterdata/warehouses/:id` |
 | BOM | `GET/POST /api/masterdata/boms`（列表可带 `asOf` 只取该日生效版）、`GET /api/masterdata/boms/explode`（多层展开）、`PATCH/DELETE /api/masterdata/boms/:id` |
-| 库存 | `GET /api/inventory/stocks`（六项口径 / `asOf` 历史时点 / `keyword` `productId` `warehouseId` 筛选）、`GET /api/inventory/balances`（物料×仓库三状态明细）、`GET /api/inventory/transactions`（流水，支持状态/业务类型/日期筛选）、`POST /api/inventory/status-change`（冻结/解冻/送检/质检放行） |
+| 库存 | `GET /api/inventory/stocks`（八列口径 / `asOf` 历史时点 / `keyword` `productId` `warehouseId` 筛选）、`GET /api/inventory/balances`（物料×仓库三状态明细）、`GET /api/inventory/transactions`（流水，支持状态/业务类型/日期筛选）、`POST /api/inventory/status-change`（冻结/解冻/送检/质检放行） |
 | 采购 | `GET/POST /api/purchase/orders`、`GET/PATCH/DELETE /api/purchase/orders/:id`、`POST /api/purchase/orders/:id/confirm`（确认）、`POST /api/purchase/orders/:id/cancel`（取消）、`POST /api/purchase/inbound`（行级入库过账）、`GET/POST /api/purchase/returns`（采购退货） |
 | 销售 | `GET/POST /api/sales/orders`、`GET/PATCH/DELETE /api/sales/orders/:id`、`POST /api/sales/orders/:id/confirm`（确认）、`POST /api/sales/orders/:id/cancel`（取消）、`POST /api/sales/outbound`（行级出库过账）、`GET/POST /api/sales/returns`（销售退货） |
 | 库存调拨 | `GET/POST /api/inventory/transfers`、`GET/PATCH/DELETE /api/inventory/transfers/:id`、`POST /api/inventory/transfers/:id/confirm`（确认）、`/cancel`（取消）、`/ship`（整单发货）、`/receive`（整单收货） |
