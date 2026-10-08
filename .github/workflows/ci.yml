@@ -17,7 +17,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm 11.24.0（packageManager 固定版本）要求 Node >= 22.13，
+          # 故 CI 用 22 运行；应用本身运行时仍兼容 engines 声明的 >= 20。
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
