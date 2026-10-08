@@ -56,7 +56,7 @@
 </template>
 
 <script setup lang="ts">
-import { TRANSFER_ORDER_STATUS_LABELS, type TransferOrderStatus } from '@light-erp/shared';
+import { PERMISSIONS, TRANSFER_ORDER_STATUS_LABELS, type TransferOrderStatus } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -99,7 +99,7 @@ const STATUS_TAG: Record<TransferOrderStatus, 'info' | 'primary' | 'warning' | '
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('inventory.transfer.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.inventoryTransferManage));
 
 const loading = ref(false);
 const order = ref<OrderHeader | null>(null);

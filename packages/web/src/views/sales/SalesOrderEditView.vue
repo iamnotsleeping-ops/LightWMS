@@ -6,7 +6,7 @@
         <div>
           <el-button @click="goBack">返回</el-button>
           <el-button type="primary" plain :loading="saving" @click="save(false)">保存草稿</el-button>
-          <el-button type="primary" :loading="saving" @click="save(true)">保存并确认</el-button>
+          <el-button v-permission="PERMISSIONS.salesOrderManage" type="primary" :loading="saving" @click="save(true)">保存并确认</el-button>
         </div>
       </div>
     </template>
@@ -112,6 +112,7 @@
 </template>
 
 <script setup lang="ts">
+import { PERMISSIONS } from '@light-erp/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';

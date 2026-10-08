@@ -5,7 +5,7 @@
         <span>{{ isEdit ? `编辑盘点单 ${orderNo}` : '新建盘点单' }}</span>
         <div>
           <el-button @click="goBack">返回</el-button>
-          <el-button type="primary" :loading="saving" @click="save">保存草稿</el-button>
+          <el-button v-permission="PERMISSIONS.inventoryStocktakeManage" type="primary" :loading="saving" @click="save">保存草稿</el-button>
         </div>
       </div>
     </template>
@@ -99,6 +99,7 @@
 
 <script setup lang="ts">
 import {
+  PERMISSIONS,
   STOCK_STATUSES,
   STOCK_STATUS_LABELS,
   type StockStatus,

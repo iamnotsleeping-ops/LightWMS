@@ -53,6 +53,7 @@
 
 <script setup lang="ts">
 import {
+  PERMISSIONS,
   STOCK_STATUS_LABELS,
   STOCKTAKE_ORDER_STATUS_LABELS,
   type StockStatus,
@@ -96,7 +97,7 @@ const STATUS_TAG: Record<StocktakeOrderStatus, 'info' | 'success' | 'danger'> = 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('inventory.stocktake.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.inventoryStocktakeManage));
 
 const loading = ref(false);
 const order = ref<OrderHeader | null>(null);

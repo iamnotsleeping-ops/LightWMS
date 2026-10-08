@@ -80,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import type { PartnerType } from '@light-erp/shared';
+import { PERMISSIONS, type PartnerType } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
@@ -104,7 +104,7 @@ const TYPE_LABEL: Record<PartnerType, string> = {
 };
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('masterdata.partner.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.masterdataPartnerManage));
 
 const rows = ref<PartnerRow[]>([]);
 const loading = ref(false);

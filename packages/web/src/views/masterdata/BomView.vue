@@ -128,6 +128,7 @@
 </template>
 
 <script setup lang="ts">
+import { PERMISSIONS } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -159,7 +160,7 @@ interface ItemOption {
 
 const auth = useAuthStore();
 const router = useRouter();
-const canManage = computed(() => auth.has('masterdata.bom.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.masterdataBomManage));
 
 const rows = ref<BomRow[]>([]);
 const items = ref<ItemOption[]>([]);

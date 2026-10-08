@@ -75,6 +75,7 @@
 </template>
 
 <script setup lang="ts">
+import { PERMISSIONS } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
@@ -106,7 +107,7 @@ const MODULE_LABEL: Record<string, string> = {
 };
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('system.role.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.systemRoleManage));
 
 const roles = ref<RoleRow[]>([]);
 const permissions = ref<PermissionRow[]>([]);

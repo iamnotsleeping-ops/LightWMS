@@ -194,6 +194,7 @@
 import {
   ALERT_TYPES,
   ALERT_TYPE_LABELS,
+  PERMISSIONS,
   type AlertType,
 } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -238,7 +239,7 @@ interface RuleRow {
 }
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('inventory.alert.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.inventoryAlertManage));
 
 const warehouses = ref<Option[]>([]);
 const itemOptions = ref<Option[]>([]);

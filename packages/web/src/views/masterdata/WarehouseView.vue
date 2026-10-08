@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { WAREHOUSE_TYPES, type WarehouseType } from '@light-erp/shared';
+import { PERMISSIONS, WAREHOUSE_TYPES, type WarehouseType } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
@@ -91,7 +91,7 @@ const TYPE_TAG: Record<WarehouseType, 'primary' | 'success' | 'warning'> = {
 };
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('masterdata.warehouse.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.masterdataWarehouseManage));
 
 function typeLabel(value: unknown): string {
   return TYPE_LABEL[value as WarehouseType] ?? String(value);

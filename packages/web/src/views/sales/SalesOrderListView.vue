@@ -108,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { SALES_ORDER_STATUS_LABELS, type SalesOrderStatus } from '@light-erp/shared';
+import { PERMISSIONS, SALES_ORDER_STATUS_LABELS, type SalesOrderStatus } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -153,8 +153,8 @@ const GROUPS = [
 
 const router = useRouter();
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('sales.order.manage'));
-const canConfirm = computed(() => auth.has('sales.order.confirm'));
+const canManage = computed(() => auth.has(PERMISSIONS.salesOrderManage));
+const canConfirm = computed(() => auth.has(PERMISSIONS.salesOrderConfirm));
 
 const rows = ref<OrderRow[]>([]);
 const customers = ref<Option[]>([]);

@@ -64,6 +64,7 @@
 </template>
 
 <script setup lang="ts">
+import { PERMISSIONS } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
@@ -81,7 +82,7 @@ interface CategoryRow {
 }
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('masterdata.category.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.masterdataCategoryManage));
 
 const rows = ref<CategoryRow[]>([]);
 const loading = ref(false);

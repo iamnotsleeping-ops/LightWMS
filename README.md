@@ -310,7 +310,7 @@ P8 增补页面：首页看板（KPI 指标卡 + ECharts 近 30 天出入库双�
 P8 **零迁移**：4 张报表与看板全部基于既有账本（`stock_transaction` / `stock_balance`）与单据表计算，`report.view` 权限码已在 `0002_rbac_seed.sql` 就位、`export_task` 表虽在 `0001_init.sql` 预留但本阶段不启用，无新增迁移。
 P9 交付：独立种子脚本（`pnpm seed`）+ 端到端验收测试（`packages/server/src/test/acceptance.test.ts`，共 12 例），在空库上重建全量演示数据并逐阶段核对主数据 / 库存引擎 / 采购 / 销售 / 调拨盘点预警 / 报表 / 看板 / 对外接口。
 P9 **零迁移**：种子数据不写进迁移，业务单据全部复用既有 service 生成，无新增表、索引或迁移。
-其余菜单分组（系统设置 → 系统参数）暂置灰，随对应阶段开放。
+后续优化：权限码统一收敛至 `packages/shared` 的 `PERMISSIONS` 常量（前端菜单/守卫与后端路由共用）；新增 `v-permission` 按钮级权限指令；写操作路由（新建 / 编辑 / 入库 / 出库）在守卫中按 manage 权限二次校验；补齐系统参数只读页（`/system/params`，权限码 `system.param.view`），菜单分组至此全部激活。
 
 ## 种子数据与验收测试
 

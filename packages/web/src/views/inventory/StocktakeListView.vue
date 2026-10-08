@@ -84,7 +84,7 @@
 </template>
 
 <script setup lang="ts">
-import { STOCKTAKE_ORDER_STATUS_LABELS, type StocktakeOrderStatus } from '@light-erp/shared';
+import { PERMISSIONS, STOCKTAKE_ORDER_STATUS_LABELS, type StocktakeOrderStatus } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -123,7 +123,7 @@ const GROUPS = [
 
 const router = useRouter();
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('inventory.stocktake.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.inventoryStocktakeManage));
 
 const rows = ref<StocktakeRow[]>([]);
 const warehouses = ref<OptionRow[]>([]);

@@ -45,7 +45,7 @@
       <template #header>
         <div class="header">
           <span>入库明细 · {{ selected.order_no }}</span>
-          <el-button type="primary" :loading="submitting" @click="submit">提交入库</el-button>
+          <el-button v-permission="PERMISSIONS.purchaseInboundManage" type="primary" :loading="submitting" @click="submit">提交入库</el-button>
         </div>
       </template>
 
@@ -82,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { PURCHASE_ORDER_STATUS_LABELS, type PurchaseOrderStatus } from '@light-erp/shared';
+import { PERMISSIONS, PURCHASE_ORDER_STATUS_LABELS, type PurchaseOrderStatus } from '@light-erp/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';

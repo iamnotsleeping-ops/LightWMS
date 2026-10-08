@@ -139,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { SALES_ORDER_STATUS_LABELS, type SalesOrderStatus } from '@light-erp/shared';
+import { PERMISSIONS, SALES_ORDER_STATUS_LABELS, type SalesOrderStatus } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -205,8 +205,8 @@ const STATUS_TAG: Record<SalesOrderStatus, 'info' | 'primary' | 'warning' | 'suc
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
-const canConfirm = computed(() => auth.has('sales.order.confirm'));
-const canOutbound = computed(() => auth.has('sales.outbound.manage'));
+const canConfirm = computed(() => auth.has(PERMISSIONS.salesOrderConfirm));
+const canOutbound = computed(() => auth.has(PERMISSIONS.salesOutboundManage));
 
 const loading = ref(false);
 const order = ref<OrderHeader | null>(null);

@@ -89,6 +89,7 @@
 <script setup lang="ts">
 import {
   ALLOWED_STATUS_TRANSITIONS,
+  PERMISSIONS,
   STOCK_STATUS_LABELS,
   STATUS_TRANSITION_ACTION_LABELS,
   type StockStatus,
@@ -139,7 +140,7 @@ const STATUS_ACTIONS: StatusAction[] = ALLOWED_STATUS_TRANSITIONS.map((action) =
 }));
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('inventory.status.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.inventoryStatusManage));
 
 function statusLabel(value: unknown): string {
   return STOCK_STATUS_LABELS[value as keyof typeof STOCK_STATUS_LABELS] ?? String(value);

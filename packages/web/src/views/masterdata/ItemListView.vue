@@ -124,6 +124,7 @@
 </template>
 
 <script setup lang="ts">
+import { PERMISSIONS } from '@light-erp/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
@@ -156,7 +157,7 @@ interface CustomerOption {
 }
 
 const auth = useAuthStore();
-const canManage = computed(() => auth.has('masterdata.item.manage'));
+const canManage = computed(() => auth.has(PERMISSIONS.masterdataItemManage));
 
 const rows = ref<ItemRow[]>([]);
 const categories = ref<CategoryOption[]>([]);
