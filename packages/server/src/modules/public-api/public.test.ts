@@ -296,22 +296,51 @@ describe('IF-5b 供应商提前期聚合', () => {
   });
 });
 
-describe('IF-6 销售订单', () => {
-  it('customer_code 过滤、未出库量口径、status 多值', async () => {
+describe('IF-6 销售订单行', () => {
+  it('返回行级字段（订单号/行号/客户编码/物料编码/数量/要求交期/状态）', async () => {
     makeConfirmedSales(25);
 
-    const body = (await get('/api/v1/sales-orders?customer_code=CU-01')).json();
+    const body = (await get('/api/v1/sales-orders')).json();
     expect(body.page.total).toBe(1);
-    expect(body.data[0]).toMatchObject({
+    expect(body.data[0]).toEqual({
+      order_no: expect.stringMatching(/^SO-\d{8}-\d{4}$/),
+      line_no: 1,
       customer_code: 'CU-01',
+      item_code: 'RM-001',
+      quantity: 25,
+      due_date: '2026-01-20',
       status: 'confirmed',
-      total_qty: 25,
-      shipped_qty: 0,
-      unshipped: 25,
     });
+    // 客户已脱敏为编码：不暴露客户名称与金额
+    expect(body.data[0]).not.toHaveProperty('customer_name');
+    expect(body.data[0]).not.toHaveProperty('total_amount');
+  });
 
-    const drafted = (await get('/api/v1/sales-orders?status=draft')).json();
-    expect(drafted.page.total).toBe(0);
+  it('order_no / customer_code / item_code / status 多值 / 要求交期区间过滤', async () => {
+    const orderId = makeConfirmedSales(25);
+    const { order_no } = db
+      .prepare('SELECT order_no FROM sales_order WHERE id = ?')
+      .get(orderId) as { order_no: string };
+
+    expect((await get(`/api/v1/sales-orders?order_no=${order_no}`)).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?order_no=SO-NOPE')).json().page.total).toBe(0);
+
+    expect((await get('/api/v1/sales-orders?customer_code=CU-01')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?customer_code=NOPE')).json().page.total).toBe(0);
+
+    expect((await get('/api/v1/sales-orders?item_code=RM-001')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?item_code=NOPE')).json().page.total).toBe(0);
+
+    expect((await get('/api/v1/sales-orders?status=confirmed,partial')).json().page.total).toBe(1);
+    expect((await get('/api/v1/sales-orders?status=draft')).json().page.total).toBe(0);
+
+    // date_from / date_to 按要求交期（due_date=2026-01-20）过滤
+    expect(
+      (await get('/api/v1/sales-orders?date_from=2026-01-01&date_to=2026-01-31')).json().page.total,
+    ).toBe(1);
+    expect(
+      (await get('/api/v1/sales-orders?date_from=2026-02-01&date_to=2026-02-28')).json().page.total,
+    ).toBe(0);
   });
 });
 

@@ -242,10 +242,14 @@ export const openapiDocument = {
     '/sales-orders': {
       get: {
         tags: ['public'],
-        summary: 'IF-6 销售订单',
+        summary: 'IF-6 销售订单行',
+        description:
+          '一行 = 销售单的一行物料。字段：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 数量 / 要求交期 / 订单状态。',
         parameters: [
           keywordParam,
+          codeParam('order_no', 'SO-20260101-0001'),
           codeParam('customer_code', 'CU-01'),
+          codeParam('item_code', 'FG-1001'),
           {
             name: 'status',
             in: 'query',
@@ -253,13 +257,17 @@ export const openapiDocument = {
             description: '逗号分隔多值',
             schema: { type: 'string', example: 'confirmed,partial' },
           },
-          dateParam('date_from'),
-          dateParam('date_to'),
+          { ...dateParam('date_from'), description: '要求交期起（YYYY-MM-DD）' },
+          { ...dateParam('date_to'), description: '要求交期止（YYYY-MM-DD）' },
           FORMAT_PARAM,
           PAGE_PARAM,
           PAGE_SIZE_PARAM,
         ],
-        responses: { '200': envelopeResponse('[销售单]') },
+        responses: {
+          '200': envelopeResponse(
+            '[{ order_no, line_no, customer_code, item_code, quantity, due_date, status }]',
+          ),
+        },
       },
     },
     '/warehouses': {

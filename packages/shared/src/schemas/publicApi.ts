@@ -109,10 +109,13 @@ export const publicSupplierParamSchema = z.object({
   code: z.string().trim().min(1).max(50),
 });
 
-// ---------- IF-6 销售订单 ----------
+// ---------- IF-6 销售订单行 ----------
+/** 返回行级明细；`date_from` / `date_to` 按「要求交期」（due_date）过滤 */
 export const publicSalesOrdersQuerySchema = publicPaginationSchema.extend({
   keyword: optionalText(100),
+  order_no: optionalText(50),
   customer_code: optionalText(50),
+  item_code: optionalText(50),
   status: optionalText(100),
   date_from: optionalDate,
   date_to: optionalDate,

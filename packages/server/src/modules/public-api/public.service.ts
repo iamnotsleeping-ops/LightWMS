@@ -1,5 +1,6 @@
 import {
   PURCHASE_ORDER_STATUSES,
+  SALES_ORDER_STATUSES,
   type PublicBomExplodeQuery,
   type PublicBomsQuery,
   type PublicInTransitQuery,
@@ -15,7 +16,6 @@ import { RECEIPT_CTE, daysBetween, mean, round } from '../../lib/leadtime';
 import { ApiError, type PageInfo } from '../../lib/response';
 import { explodeBom, listBoms } from '../masterdata/bom.service';
 import { queryStockList } from '../inventory/stock.query';
-import { listOrders as listSalesOrders } from '../sales/sales.service';
 
 type Row = Record<string, unknown>;
 
@@ -447,45 +447,68 @@ export function supplierLeadTimeStats(code: string, query: PublicLeadTimeStatsQu
   };
 }
 
-// ---------- IF-6 销售订单 ----------
+// ---------- IF-6 销售订单行 ----------
 
+/**
+ * 行级明细：一行 = 销售单的一行物料。
+ * 字段口径：订单号 / 行号 / 客户（脱敏为客户编码）/ 物料编码 / 数量 / 要求交期 / 订单状态。
+ * `date_from`、`date_to` 按「要求交期」（`due_date`）过滤。
+ */
 export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPaged {
-  let customerId: number | undefined;
+  const db = getDb();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (query.order_no) {
+    where.push('so.order_no = ?');
+    params.push(query.order_no);
+  }
   if (query.customer_code) {
-    const id = idByCode('partner', query.customer_code);
-    if (id === null) return emptyPage(query);
-    customerId = id;
+    where.push('c.code = ?');
+    params.push(query.customer_code);
+  }
+  if (query.item_code) {
+    where.push('i.code = ?');
+    params.push(query.item_code);
+  }
+  if (query.status) {
+    const statuses = parseStatusList(query.status, SALES_ORDER_STATUSES, []);
+    if (statuses.length === 0) return emptyPage(query);
+    where.push(`so.status IN (${statuses.map(() => '?').join(', ')})`);
+    params.push(...statuses);
+  }
+  if (query.date_from) {
+    where.push('soi.due_date >= ?');
+    params.push(query.date_from);
+  }
+  if (query.date_to) {
+    where.push('soi.due_date <= ?');
+    params.push(query.date_to);
+  }
+  if (query.keyword) {
+    where.push('(so.order_no LIKE ? OR c.code LIKE ? OR i.code LIKE ? OR i.name LIKE ?)');
+    const like = `%${query.keyword}%`;
+    params.push(like, like, like, like);
   }
 
-  const result = listSalesOrders({
-    page: query.page,
-    pageSize: query.page_size,
-    keyword: query.keyword,
-    customerId,
-    status: query.status,
-    dateFrom: query.date_from,
-    dateTo: query.date_to,
-  });
+  const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const base = `FROM sales_order_item soi
+       JOIN sales_order so ON so.id = soi.order_id
+       JOIN partner c ON c.id = so.customer_id
+       JOIN item i ON i.id = soi.product_id`;
 
-  const codes = new Map<number, string>(
-    (getDb().prepare('SELECT id, code FROM partner').all() as { id: number; code: string }[]).map(
-      (row) => [row.id, row.code],
-    ),
-  );
+  const { total } = db.prepare(`SELECT COUNT(*) AS total ${base} ${clause}`).get(...params) as {
+    total: number;
+  };
+  const rows = db
+    .prepare(
+      `SELECT so.order_no, soi.line_no, c.code AS customer_code,
+              i.code AS item_code, soi.quantity, soi.due_date, so.status
+       ${base} ${clause} ORDER BY so.order_no, soi.line_no LIMIT ? OFFSET ?`,
+    )
+    .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];
 
-  const list: Row[] = result.list.map((row) => ({
-    order_no: row.order_no,
-    order_date: row.order_date,
-    status: row.status,
-    customer_code: codes.get(row.customer_id) ?? null,
-    customer_name: row.customer_name,
-    total_amount: row.total_amount,
-    total_qty: row.total_qty,
-    shipped_qty: row.shipped_qty,
-    unshipped: row.unshipped,
-  }));
-
-  return { list, page: result.page, warnings: [] };
+  return { list: rows, page: pageOf(query, total), warnings: [] };
 }
 
 // ---------- IF-7 工厂 / 仓库 ----------
