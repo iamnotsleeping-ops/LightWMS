@@ -54,6 +54,11 @@ export const config = {
   defaults: {
     portStockAsInventory: bool(process.env.PORT_STOCK_AS_INVENTORY, false),
   },
+  /**
+   * 显式接受「生产环境使用 mock 登录通道」这一风险的逃生开关，默认关闭。
+   * 仅为「受控网络内的一次性部署」留出通路——打开后启动会有显著安全告警。
+   */
+  allowInsecureAuth: bool(process.env.ALLOW_INSECURE_AUTH, false),
 } as const;
 
 export type AppConfig = typeof config;
@@ -64,6 +69,8 @@ export interface StartupConfigInput {
   provider: string;
   jwtSecret: string;
   dingtalk: { appKey: string; appSecret: string; redirectUri: string };
+  /** 是否已显式放行 mock 通道（ALLOW_INSECURE_AUTH） */
+  allowInsecureAuth?: boolean;
 }
 
 /**
@@ -80,8 +87,11 @@ export function validateStartupConfig(input: StartupConfigInput): string[] {
   if (input.env !== 'production') return [];
 
   const problems: string[] = [];
-  if (input.provider === 'mock') {
-    problems.push('AUTH_PROVIDER 不能为 mock：mock 通道允许任意姓名自助登录并自动获得 sys_admin');
+  if (input.provider === 'mock' && !input.allowInsecureAuth) {
+    problems.push(
+      'AUTH_PROVIDER 不能为 mock：mock 通道允许任意姓名自助登录并自动获得 sys_admin。' +
+        '如确需在可信网络内这样部署，请显式设置 ALLOW_INSECURE_AUTH=true 承担该风险',
+    );
   }
   if (input.jwtSecret === DEV_JWT_SECRET) {
     problems.push('JWT_SECRET 仍为默认值，必须改为随机长字符串（可用 openssl rand -hex 32 生成）');
@@ -94,6 +104,21 @@ export function validateStartupConfig(input: StartupConfigInput): string[] {
   return problems;
 }
 
+/**
+ * 逃生开关生效时的显著告警文案；未生效返回 null。
+ * 由 `server.ts` 在启动时打印，确保「用 mock 跑生产」这件事在日志里留痕。
+ */
+export function insecureAuthWarning(): string | null {
+  if (config.env !== 'production' || config.auth.provider !== 'mock' || !config.allowInsecureAuth) {
+    return null;
+  }
+  return (
+    '生产环境正在使用 mock 登录通道，且已通过 ALLOW_INSECURE_AUTH=true 显式放行：' +
+    '任何能访问本服务的人都可以用任意姓名自助登录并获得 sys_admin。' +
+    '请仅限可信网络（建议配合反向代理的 IP 白名单）使用，并尽快切换为 AUTH_PROVIDER=dingtalk。'
+  );
+}
+
 /** 以当前进程配置执行自检；仅由 server.ts 在 listen 之前调用 */
 export function assertStartupConfig(): string[] {
   return validateStartupConfig({
@@ -101,5 +126,6 @@ export function assertStartupConfig(): string[] {
     provider: config.auth.provider,
     jwtSecret: config.auth.jwtSecret,
     dingtalk: config.dingtalk,
+    allowInsecureAuth: config.allowInsecureAuth,
   });
 }

@@ -1,5 +1,5 @@
 import { buildApp } from './app';
-import { assertStartupConfig, config } from './config/index';
+import { assertStartupConfig, config, insecureAuthWarning } from './config/index';
 import { closeDb, getDb } from './db/connection';
 import { runMigrations } from './db/migrate';
 
@@ -11,6 +11,10 @@ async function main(): Promise<void> {
     for (const problem of configProblems) console.error(`  - ${problem}`);
     process.exit(1);
   }
+
+  // 逃生开关生效时留痕：用 mock 跑生产是「已知并接受」的风险，不静默
+  const warning = insecureAuthWarning();
+  if (warning) console.warn(`[安全告警] ${warning}`);
 
   getDb();
   const { applied } = runMigrations();

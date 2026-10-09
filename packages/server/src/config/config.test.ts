@@ -34,6 +34,27 @@ describe('生产启动配置自检', () => {
     const problems = validateStartupConfig(production({ provider: 'mock' }));
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('AUTH_PROVIDER 不能为 mock');
+    expect(problems[0]).toContain('ALLOW_INSECURE_AUTH=true');
+  });
+
+  it('显式放行（ALLOW_INSECURE_AUTH=true）后 mock 不再阻断启动，但其余校验仍生效', () => {
+    // 仅放行 mock，其余配置齐备 → 通过
+    expect(validateStartupConfig(production({ provider: 'mock', allowInsecureAuth: true }))).toEqual(
+      [],
+    );
+
+    // 放行 mock 不能顺带放过默认 JWT 密钥
+    const problems = validateStartupConfig(
+      production({ provider: 'mock', allowInsecureAuth: true, jwtSecret: 'dev-secret-change-me' }),
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('JWT_SECRET 仍为默认值');
+  });
+
+  it('逃生开关不影响非生产环境', () => {
+    expect(
+      validateStartupConfig(production({ env: 'development', provider: 'mock' })),
+    ).toEqual([]);
   });
 
   it('生产环境沿用默认 JWT 密钥被拒（否则令牌可伪造）', () => {

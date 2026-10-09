@@ -54,6 +54,7 @@ pnpm typecheck      # 全仓类型检查
 - JWT 有效期 8h，走 `Authorization: Bearer`，前端存 `localStorage`；不做 refresh token 与登出黑名单。
 - **授权以数据库为准，不信令牌里的权限快照**：每个受保护请求都会回查 `sys_user.is_active` 与该用户经角色实际持有的权限码。因此**停用账号或撤销角色后立即生效**，无需等令牌过期。（令牌里的 `permissions` 仅用于前端渲染菜单与 `/api/auth/me` 回显。）
 - **生产启动自检**：`NODE_ENV=production` 时若 `AUTH_PROVIDER=mock`、或 `JWT_SECRET` 仍为默认值、或钉钉通道缺少 `APP_KEY`/`APP_SECRET`/`REDIRECT_URI`，后端**拒绝启动**并逐条列出问题。
+  - 逃生开关：如确需在**可信网络内**以 mock 通道跑生产（例如内网演示），可显式设置 `ALLOW_INSECURE_AUTH=true`。此时 mock 不再阻断启动（其余校验仍然生效），但启动日志会打印显著安全告警，提示「任何能访问本服务的人都能自助获得 `sys_admin`」。**请务必同时用反向代理做 IP 白名单**，并尽快切换为 `dingtalk`。
 - **无角色用户登录后被拒绝进入**，提示「未授权，请联系管理员分配角色」。
 - 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写。
 - 角色分配有两道护栏：不允许修改**自己**的角色，不允许移除**最后一名**系统管理员。
