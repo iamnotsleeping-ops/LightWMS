@@ -17,12 +17,15 @@
 
       <el-form v-else @submit.prevent="loginByMock">
         <el-form-item label="登录名">
-          <el-input v-model="name" placeholder="本地开发用户" maxlength="50" />
+          <el-input v-model="name" placeholder="账号名（由管理员分配）" maxlength="50" />
         </el-form-item>
         <el-button type="primary" size="large" class="submit" :loading="loading" native-type="submit">
           进入系统（本地 mock）
         </el-button>
-        <p class="hint">当前 AUTH_PROVIDER=mock，仅用于本地开发；真实扫码登录需在回调域名下联调。</p>
+        <p class="hint">
+          当前 AUTH_PROVIDER=mock。凭据就是登录名本身，请填写管理员分配的账号名；
+          生产环境已关闭自助建号，未知登录名会被拒绝。
+        </p>
       </el-form>
     </el-card>
   </div>
@@ -37,7 +40,7 @@ import { useAuthStore } from '@/stores/auth';
 const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
-const name = ref('本地开发用户');
+const name = ref('');
 const loading = ref(false);
 
 onMounted(async () => {
@@ -59,9 +62,16 @@ async function redirectAfterLogin(): Promise<void> {
 }
 
 async function loginByMock(): Promise<void> {
+  const account = name.value.trim();
+  // 不设兜底默认名：mock 的凭据就是账号名本身，静默回落到一个可猜的名字
+  // 只会在生产环境产生一次必然失败的登录（且掩盖了"没填"这个真实原因）。
+  if (!account) {
+    ElMessage.warning('请填写账号名');
+    return;
+  }
   loading.value = true;
   try {
-    await auth.loginMock(name.value.trim() || '本地开发用户');
+    await auth.loginMock(account);
     await redirectAfterLogin();
   } catch {
     // 错误提示已在 api client 中统一弹出
