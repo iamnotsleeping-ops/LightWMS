@@ -128,7 +128,21 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-1 物料主数据',
-        parameters: [keywordParam, codeParam('category_code', 'CAT-01'), FORMAT_PARAM, PAGE_PARAM, PAGE_SIZE_PARAM],
+        'x-returns': '物料数组 + page（分页）',
+        parameters: [
+          keywordParam,
+          codeParam('category_code', 'CAT-01'),
+          {
+            name: 'is_active',
+            in: 'query',
+            required: false,
+            description: '是否启用（1 启用 / 0 停用）',
+            schema: { type: 'integer', enum: [0, 1] },
+          },
+          FORMAT_PARAM,
+          PAGE_PARAM,
+          PAGE_SIZE_PARAM,
+        ],
         responses: {
           '200': envelopeResponse(
             [
@@ -158,6 +172,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-2 BOM（多版本，按 as_of 取生效版）',
+        'x-returns': 'BOM 版本数组（不分页）',
         parameters: [
           AS_OF_PARAM,
           codeParam('parent_item_code', 'FG-001'),
@@ -188,6 +203,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-2b BOM 多层展开（含循环检测）',
+        'x-returns': '{ root, lines, cycles } + _warnings（不分页）',
         parameters: [
           {
             name: 'itemCode',
@@ -240,6 +256,8 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-3 库存（含历史快照）',
+        'x-returns':
+          '库存数组（on_hand / frozen / qc / total_qty + reserved / in_transit / available / projected）+ page',
         parameters: [
           AS_OF_PARAM,
           keywordParam,
@@ -279,6 +297,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-4 在途 / 采购订单',
+        'x-returns': '采购在途行 + page（分页）',
         parameters: [
           AS_OF_PARAM,
           codeParam('supplier_code', 'SU-01'),
@@ -325,6 +344,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-5 历史采购订单（提前期，整单口径）',
+        'x-returns': '采购历史行（提前期为整单口径）+ page（分页）',
         parameters: [
           codeParam('supplier_code', 'SU-01'),
           codeParam('item_code', 'RM-001'),
@@ -366,6 +386,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-5b 供应商提前期聚合',
+        'x-returns': '提前期聚合对象（不分页）',
         parameters: [
           {
             name: 'code',
@@ -401,6 +422,8 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-6 销售订单行',
+        'x-returns':
+          '销售订单行数组（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 状态）+ page',
         description:
           '一行 = 销售单的一行物料。字段：订单号 / 行号 / 订单日期 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
           '未出库量 = quantity − shipped_qty − cancelled_qty。' +
@@ -453,6 +476,7 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-7 工厂 / 仓库主数据',
+        'x-returns': '仓库数组（不分页）',
         parameters: [
           {
             name: 'type',
@@ -490,6 +514,8 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-8 替代关系（关系清单，非规划结果）',
+        'x-returns':
+          '替代关系数组（主料 / 替代料 / 适用仓与父件 / 优先级 / 整数比例 / 场景 / 策略 / 生效期 / 是否启用）+ page',
         description:
           '只返回已配置的替代关系本身：谁可以替代谁、比例 / 优先级 / 场景 / 策略 / 生效期 / 适用仓与父件，' +
           '不计算可用量、不给出分配建议（分配建议见 IF-9 /substitution-plan）。' +
@@ -545,6 +571,8 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-9 替代规划（只读试算，整份返回）',
+        'x-returns':
+          '分配建议对象（allocations / filled_qty / gap_qty / skipped）+ _warnings（不分页，plan 整份返回）',
         description:
           '按主料 + 仓库 + 需求量给出替代分配建议；只读试算，不写任何单据或库存（调用前后库存与替代关系零变化）。' +
           '三种 strategy：proportion 主料优先，缺口按 priority 用替代料按比例（ratio_num / ratio_den）补齐；' +

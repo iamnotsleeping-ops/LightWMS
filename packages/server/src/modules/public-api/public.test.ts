@@ -1,5 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  publicBomExplodeQuerySchema,
+  publicBomsQuerySchema,
+  publicInTransitQuerySchema,
+  publicInventoryQuerySchema,
+  publicItemsQuerySchema,
+  publicLeadTimeStatsQuerySchema,
+  publicPurchaseHistoryQuerySchema,
+  publicSalesOrdersQuerySchema,
+  publicSubstitutesQuerySchema,
+  publicSubstitutionPlanQuerySchema,
+  publicWarehousesQuerySchema,
+} from '@light-erp/shared';
 import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
 import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
@@ -737,6 +750,66 @@ describe('OpenAPI 文档', () => {
     const doc = res.json();
     expect(doc.openapi.startsWith('3.1')).toBe(true);
     expect(Object.keys(doc.paths)).toHaveLength(11);
+  });
+
+  /**
+   * 「数据接口」页由 OpenAPI 渲染，本断言保证它永远渲染得完整。
+   *
+   * 此前该页在前端硬编码接口清单，新增 IF-8 / IF-9 后页面仍显示 9 条（双源漂移）。
+   * 现在页面只读 OpenAPI，因此这里把「渲染所需字段」变成契约的一部分：
+   * 缺 summary（IF-x 编号 + 标题）或 x-returns 的接口会让页面出现残缺行——
+   * 与其在页面上兜底，不如让漏写在测试阶段就失败。
+   */
+  it('每个对外接口都带 IF-x 编号的 summary 与 x-returns（数据接口页据此渲染）', async () => {
+    const doc = (await get('/api/v1/openapi.json')).json();
+    type Doc = { get: { summary?: string; 'x-returns'?: string } };
+    const entries = Object.entries(doc.paths) as [string, Doc][];
+    expect(entries).toHaveLength(11);
+
+    for (const [path, operations] of entries) {
+      expect(operations.get.summary, `${path} 缺 summary`).toBeTruthy();
+      expect(operations.get.summary, `${path} 的 summary 未以 IF-x 开头`).toMatch(/^IF-\S+\s+\S/);
+      expect(operations.get['x-returns'], `${path} 缺 x-returns`).toBeTruthy();
+      expect(operations.get['x-returns']?.length ?? 0).toBeGreaterThan(1);
+    }
+
+    // 编号不得重复，否则页面上会出现两行同名条目
+    const ifNos = entries.map(([, operations]) => operations.get.summary?.split(' ')[0]);
+    expect(new Set(ifNos).size).toBe(ifNos.length);
+  });
+
+  /**
+   * OpenAPI 的参数列表必须与鉴权/校验用的 zod schema 完全一致。
+   *
+   * 起因：`/items` 实际支持 `is_active`（schema 与 SQL 都有），但 openapi.ts 漏写，
+   * 于是「数据接口」页少显示一个参数、下游照文档也筛不了。文档与契约分离时这类遗漏
+   * 不会有任何测试失败，因此这里直接把两者绑死（对齐方向：以 schema 为准）。
+   */
+  it('每个对外接口的 OpenAPI 参数与 zod schema 逐字一致（含 is_active 这类易漏项）', async () => {
+    const doc = (await get('/api/v1/openapi.json')).json();
+    const routeToSchema: [string, { shape: Record<string, unknown> }][] = [
+      ['/items', publicItemsQuerySchema],
+      ['/boms', publicBomsQuerySchema],
+      ['/boms/{itemCode}/explode', publicBomExplodeQuerySchema],
+      ['/inventory', publicInventoryQuerySchema],
+      ['/in-transit', publicInTransitQuerySchema],
+      ['/purchase-history', publicPurchaseHistoryQuerySchema],
+      ['/suppliers/{code}/lead-time-stats', publicLeadTimeStatsQuerySchema],
+      ['/sales-orders', publicSalesOrdersQuerySchema],
+      ['/warehouses', publicWarehousesQuerySchema],
+      ['/substitutes', publicSubstitutesQuerySchema],
+      ['/substitution-plan', publicSubstitutionPlanQuerySchema],
+    ];
+
+    for (const [path, schema] of routeToSchema) {
+      const documented = (doc.paths[path].get.parameters as { name: string; in: string }[])
+        .filter((param) => param.in === 'query')
+        .map((param) => param.name)
+        .sort();
+      expect(documented, `${path} 的 OpenAPI 查询参数与 schema 不一致`).toEqual(
+        Object.keys(schema.shape).sort(),
+      );
+    }
   });
 
   it('11 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
