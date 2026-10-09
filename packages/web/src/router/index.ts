@@ -22,6 +22,7 @@ import BomExplodeView from '@/views/masterdata/BomExplodeView.vue';
 import ItemCategoryView from '@/views/masterdata/ItemCategoryView.vue';
 import ItemListView from '@/views/masterdata/ItemListView.vue';
 import PartnerView from '@/views/masterdata/PartnerView.vue';
+import SubstituteView from '@/views/masterdata/SubstituteView.vue';
 import WarehouseView from '@/views/masterdata/WarehouseView.vue';
 import PurchaseInboundView from '@/views/purchase/PurchaseInboundView.vue';
 import PurchaseOrderDetailView from '@/views/purchase/PurchaseOrderDetailView.vue';
@@ -30,6 +31,7 @@ import PurchaseOrderListView from '@/views/purchase/PurchaseOrderListView.vue';
 import InventoryLedgerView from '@/views/report/InventoryLedgerView.vue';
 import ItemMovementView from '@/views/report/ItemMovementView.vue';
 import StockSnapshotView from '@/views/report/StockSnapshotView.vue';
+import SubstituteUsageView from '@/views/report/SubstituteUsageView.vue';
 import SupplierLeadTimeView from '@/views/report/SupplierLeadTimeView.vue';
 import ApiDocsView from '@/views/system/ApiDocsView.vue';
 import RoleView from '@/views/system/RoleView.vue';
@@ -89,6 +91,12 @@ const routes: RouteRecordRaw[] = [
         name: 'masterdata-warehouses',
         component: WarehouseView,
         meta: { title: '仓库 / 工厂管理' },
+      },
+      {
+        path: 'masterdata/substitutes',
+        name: 'masterdata-substitutes',
+        component: SubstituteView,
+        meta: { title: '替代关系', permission: PERMISSIONS.masterdataSubstituteView },
       },
       {
         path: 'inventory/stocks',
@@ -245,6 +253,12 @@ const routes: RouteRecordRaw[] = [
         name: 'report-supplier-lead-time',
         component: SupplierLeadTimeView,
         meta: { title: '供应商提前期分析' },
+      },
+      {
+        path: 'report/substitute-usage',
+        name: 'report-substitute-usage',
+        component: SubstituteUsageView,
+        meta: { title: '替代料调用', permission: PERMISSIONS.reportView },
       },
       {
         path: 'system/users',

@@ -40,6 +40,11 @@ export const MENUS: MenuNode[] = [
         path: '/masterdata/warehouses',
         permission: PERMISSIONS.masterdataWarehouseView,
       },
+      {
+        title: '替代关系',
+        path: '/masterdata/substitutes',
+        permission: PERMISSIONS.masterdataSubstituteView,
+      },
     ],
   },
   {
@@ -108,6 +113,11 @@ export const MENUS: MenuNode[] = [
       {
         title: '供应商提前期分析',
         path: '/report/supplier-lead-time',
+        permission: PERMISSIONS.reportView,
+      },
+      {
+        title: '替代料调用',
+        path: '/report/substitute-usage',
         permission: PERMISSIONS.reportView,
       },
     ],
