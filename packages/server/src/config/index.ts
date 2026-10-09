@@ -42,6 +42,15 @@ export const config = {
     provider: (process.env.AUTH_PROVIDER ?? 'mock') as 'dingtalk' | 'mock',
     jwtSecret: process.env.JWT_SECRET ?? DEV_JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '8h',
+    /**
+     * mock 通道是否允许「自助建号 + 自动授予 sys_admin」，默认开启以保留本地开发便利。
+     *
+     * 关闭后 mock 登录**只能登录已存在的账号**：不再按姓名建号、也不再补授任何角色。
+     * 生产上用 mock 时必须关闭——否则任何人填一个姓名就能拿到 `sys_admin`。
+     * 注意：关闭本项并不能救回「账号名可猜」的问题（账号名即口令），
+     * 故生产上还必须保证已存在账号的名字足够随机，见 `insecureAuthWarning()`。
+     */
+    mockAutoAdmin: bool(process.env.MOCK_AUTO_ADMIN, true),
   },
   dingtalk: {
     appKey: process.env.DINGTALK_APP_KEY ?? '',
@@ -71,12 +80,14 @@ export interface StartupConfigInput {
   dingtalk: { appKey: string; appSecret: string; redirectUri: string };
   /** 是否已显式放行 mock 通道（ALLOW_INSECURE_AUTH） */
   allowInsecureAuth?: boolean;
+  /** mock 通道是否允许自助建号并自动授予 sys_admin（MOCK_AUTO_ADMIN，默认 true） */
+  mockAutoAdmin?: boolean;
 }
 
 /**
  * 启动前自检：把「能跑但危险」的配置组合拦在启动阶段。
  *
- * 背景：`AUTH_PROVIDER` 缺省为 mock，而 mock 通道会用**任意姓名**自动建号并授予
+ * 背景：`AUTH_PROVIDER` 缺省为 mock，而 mock 通道默认会用**任意姓名**自动建号并授予
  * `sys_admin`；`JWT_SECRET` 缺省为弱值，泄漏即可伪造任意用户令牌。两者只要有一项
  * 在生产环境被漏配，就等于对外开放了管理员自助入口。因此这里只做「生产必须显式配置」
  * 的 fail-fast，不改变开发期的默认便利。
@@ -89,8 +100,15 @@ export function validateStartupConfig(input: StartupConfigInput): string[] {
   const problems: string[] = [];
   if (input.provider === 'mock' && !input.allowInsecureAuth) {
     problems.push(
-      'AUTH_PROVIDER 不能为 mock：mock 通道允许任意姓名自助登录并自动获得 sys_admin。' +
-        '如确需在可信网络内这样部署，请显式设置 ALLOW_INSECURE_AUTH=true 承担该风险',
+      'AUTH_PROVIDER 不能为 mock：mock 通道默认允许任意姓名自助登录并自动获得 sys_admin。' +
+        '如确需在可信网络内这样部署，请显式设置 ALLOW_INSECURE_AUTH=true 承担该风险' +
+        '（并建议同时设置 MOCK_AUTO_ADMIN=false 关闭自助建号与自动授权）',
+    );
+  }
+  if (input.provider === 'mock' && input.allowInsecureAuth && input.mockAutoAdmin !== false) {
+    problems.push(
+      '生产环境用 mock 通道时 MOCK_AUTO_ADMIN 必须为 false：否则任何能访问本服务的人' +
+        '都可以用任意姓名自助登录并获得 sys_admin',
     );
   }
   if (input.jwtSecret === DEV_JWT_SECRET) {
@@ -109,9 +127,20 @@ export function validateStartupConfig(input: StartupConfigInput): string[] {
  * 由 `server.ts` 在启动时打印，确保「用 mock 跑生产」这件事在日志里留痕。
  */
 export function insecureAuthWarning(): string | null {
-  if (config.env !== 'production' || config.auth.provider !== 'mock' || !config.allowInsecureAuth) {
-    return null;
+  if (config.env !== 'production' || config.auth.provider !== 'mock') return null;
+
+  // MOCK_AUTO_ADMIN=false 时不再有"填个名字就当管理员"的洞，但 mock 的凭据就是账号名，
+  // 因此仍然必须把既有的管理员账号换成不可猜的名字，否则等于把口令写在门牌上。
+  if (config.auth.mockAutoAdmin === false) {
+    return (
+      '生产环境正在使用 mock 登录通道（ALLOW_INSECURE_AUTH=true），已通过 ' +
+      'MOCK_AUTO_ADMIN=false 关闭自助建号与自动授权：仅**已存在**的账号可登录，且不会补授任何角色。' +
+      '注意 mock 的凭据就是账号名本身——请确认现有账号名不可猜（建议随机长串），' +
+      '否则知道名字的人即可登录为该账号。请尽快切换为 AUTH_PROVIDER=dingtalk。'
+    );
   }
+
+  if (!config.allowInsecureAuth) return null;
   return (
     '生产环境正在使用 mock 登录通道，且已通过 ALLOW_INSECURE_AUTH=true 显式放行：' +
     '任何能访问本服务的人都可以用任意姓名自助登录并获得 sys_admin。' +
@@ -127,5 +156,6 @@ export function assertStartupConfig(): string[] {
     jwtSecret: config.auth.jwtSecret,
     dingtalk: config.dingtalk,
     allowInsecureAuth: config.allowInsecureAuth,
+    mockAutoAdmin: config.auth.mockAutoAdmin,
   });
 }

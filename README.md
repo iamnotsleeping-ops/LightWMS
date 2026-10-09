@@ -54,7 +54,10 @@ pnpm typecheck      # 全仓类型检查
 - JWT 有效期 8h，走 `Authorization: Bearer`，前端存 `localStorage`；不做 refresh token 与登出黑名单。
 - **授权以数据库为准，不信令牌里的权限快照**：每个受保护请求都会回查 `sys_user.is_active` 与该用户经角色实际持有的权限码。因此**停用账号或撤销角色后立即生效**，无需等令牌过期。（令牌里的 `permissions` 仅用于前端渲染菜单与 `/api/auth/me` 回显。）
 - **生产启动自检**：`NODE_ENV=production` 时若 `AUTH_PROVIDER=mock`、或 `JWT_SECRET` 仍为默认值、或钉钉通道缺少 `APP_KEY`/`APP_SECRET`/`REDIRECT_URI`，后端**拒绝启动**并逐条列出问题。
-  - 逃生开关：如确需在**可信网络内**以 mock 通道跑生产（例如内网演示），可显式设置 `ALLOW_INSECURE_AUTH=true`。此时 mock 不再阻断启动（其余校验仍然生效），但启动日志会打印显著安全告警，提示「任何能访问本服务的人都能自助获得 `sys_admin`」。**请务必同时用反向代理做 IP 白名单**，并尽快切换为 `dingtalk`。
+  - 逃生开关：如确需在**可信网络内**以 mock 通道跑生产（例如内网演示），须**同时**设置两项，缺一不可：
+    - `ALLOW_INSECURE_AUTH=true` —— 显式认领「用 mock 跑生产」这一风险；只设它仍会被拒启动。
+    - `MOCK_AUTO_ADMIN=false` —— 关闭 mock 的**自助建号 + 自动授予 `sys_admin`**。关闭后 mock 登录**只能登录已存在的账号**，未知名一律 401，也不会给任何账号补授角色。
+  - ⚠ **关闭自助建号并不等于安全**：mock 的凭据就是**账号名本身**。若库里还留着可猜名字的管理员账号（如「验收员」），陌生人直接填那个名字就能登录成管理员。因此生产上还必须把既有管理员账号改成**不可猜的名字**（建议随机长串，例如 `运维入口-9f3a7c`），并尽快切换为 `dingtalk`。启动日志会打印对应告警。
 - **无角色用户登录后被拒绝进入**，提示「未授权，请联系管理员分配角色」。
 - 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），共 38 个权限码；内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写（新增权限码由迁移补种）。
 - 角色分配有两道护栏：不允许修改**自己**的角色，不允许移除**最后一名**系统管理员。

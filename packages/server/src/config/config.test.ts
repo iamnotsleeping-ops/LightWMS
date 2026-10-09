@@ -37,18 +37,33 @@ describe('生产启动配置自检', () => {
     expect(problems[0]).toContain('ALLOW_INSECURE_AUTH=true');
   });
 
-  it('显式放行（ALLOW_INSECURE_AUTH=true）后 mock 不再阻断启动，但其余校验仍生效', () => {
-    // 仅放行 mock，其余配置齐备 → 通过
-    expect(validateStartupConfig(production({ provider: 'mock', allowInsecureAuth: true }))).toEqual(
-      [],
-    );
+  it('显式放行（ALLOW_INSECURE_AUTH=true）且关闭自助建号后 mock 不再阻断启动', () => {
+    // 生产用 mock 的**唯一**合格组合：显式放行 + 关闭自助建号/自动授权
+    expect(
+      validateStartupConfig(
+        production({ provider: 'mock', allowInsecureAuth: true, mockAutoAdmin: false }),
+      ),
+    ).toEqual([]);
 
     // 放行 mock 不能顺带放过默认 JWT 密钥
     const problems = validateStartupConfig(
-      production({ provider: 'mock', allowInsecureAuth: true, jwtSecret: 'dev-secret-change-me' }),
+      production({
+        provider: 'mock',
+        allowInsecureAuth: true,
+        mockAutoAdmin: false,
+        jwtSecret: 'dev-secret-change-me',
+      }),
     );
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('JWT_SECRET 仍为默认值');
+  });
+
+  it('只放行 mock 但仍开着自助建号 → 仍被拒（否则任意姓名即可获得 sys_admin）', () => {
+    const problems = validateStartupConfig(
+      production({ provider: 'mock', allowInsecureAuth: true }),
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('MOCK_AUTO_ADMIN');
   });
 
   it('逃生开关不影响非生产环境', () => {
@@ -77,6 +92,15 @@ describe('生产启动配置自检', () => {
     const problems = validateStartupConfig(
       production({ provider: 'mock', jwtSecret: 'dev-secret-change-me' }),
     );
+    // mock 未放行 + 默认密钥 = 2 条
     expect(problems).toHaveLength(2);
+
+    // 放行后：mock 自助建号未关 + 默认密钥 = 仍是 2 条
+    const passed = validateStartupConfig(
+      production({ provider: 'mock', allowInsecureAuth: true, jwtSecret: 'dev-secret-change-me' }),
+    );
+    expect(passed).toHaveLength(2);
+    expect(passed.join('\n')).toContain('MOCK_AUTO_ADMIN');
+    expect(passed.join('\n')).toContain('JWT_SECRET 仍为默认值');
   });
 });

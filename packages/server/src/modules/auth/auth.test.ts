@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
+import { ApiError } from '../../lib/response';
 import { createAuthorizedUser, createTestDb, grantPermissions } from '../../test/db';
 
 /**
@@ -146,5 +147,50 @@ describe('mock 登录通道的提权风险（服务层事实记录）', () => {
     expect(roles.map((row) => row.code)).toEqual(['sys_admin']);
 
     // 因此该通道在生产环境必须关闭——由 config 自检强制（见 config.test.ts）
+  });
+
+  it('MOCK_AUTO_ADMIN=false：不再自助建号（未知姓名直接 401，不留脏数据）', async () => {
+    const { ensureMockUser } = await import('./auth.service');
+
+    expect(() => ensureMockUser('路人乙', false)).toThrow(ApiError);
+    expect(() => ensureMockUser('路人乙', false)).toThrow(/未开启自助建号/);
+
+    const count = db.prepare('SELECT COUNT(*) AS n FROM sys_user').get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
+  it('MOCK_AUTO_ADMIN=false：已存在账号可登录，且不会补授任何角色', async () => {
+    const { ensureMockUser } = await import('./auth.service');
+
+    // 先造一个「无角色」的既有账号（模拟运维手工建的账号）
+    const now = new Date().toISOString();
+    const userId = Number(
+      db
+        .prepare(
+          `INSERT INTO sys_user (dingtalk_user_id, name, is_active, created_at, updated_at)
+           VALUES ('mock:运维入口-9f3a7c', '运维入口-9f3a7c', 1, ?, ?)`,
+        )
+        .run(now, now).lastInsertRowid,
+    );
+
+    const loginId = ensureMockUser('运维入口-9f3a7c', false);
+    expect(loginId).toBe(userId);
+
+    const roles = db
+      .prepare('SELECT COUNT(*) AS n FROM sys_user_role WHERE user_id = ?')
+      .get(userId) as { n: number };
+    expect(roles.n).toBe(0); // 关键：关闭后不再自动补授 sys_admin
+  });
+
+  it('MOCK_AUTO_ADMIN=false：停用账号被拒（不会因关闭自助建号而绕过停用检查）', async () => {
+    const { ensureMockUser } = await import('./auth.service');
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO sys_user (dingtalk_user_id, name, is_active, created_at, updated_at)
+       VALUES ('mock:离职员工', '离职员工', 0, ?, ?)`,
+    ).run(now, now);
+
+    expect(() => ensureMockUser('离职员工', false)).toThrow(/账号已停用/);
   });
 });
