@@ -1,6 +1,6 @@
 # 轻量级进销存系统
 
-支撑中小商家 / 工厂的采购、销售、库存日常作业，同时对外提供 7 组（共 9 条）标准只读数据接口，供下游供应链计划与推演引擎消费。单机或局域网部署，单租户。
+支撑中小商家 / 工厂的采购、销售、库存日常作业，同时对外提供 9 组（共 11 条）标准只读数据接口，供下游供应链计划与推演引擎消费。单机或局域网部署，单租户。
 
 ## 环境要求
 
@@ -56,9 +56,10 @@ pnpm typecheck      # 全仓类型检查
 - **生产启动自检**：`NODE_ENV=production` 时若 `AUTH_PROVIDER=mock`、或 `JWT_SECRET` 仍为默认值、或钉钉通道缺少 `APP_KEY`/`APP_SECRET`/`REDIRECT_URI`，后端**拒绝启动**并逐条列出问题。
   - 逃生开关：如确需在**可信网络内**以 mock 通道跑生产（例如内网演示），可显式设置 `ALLOW_INSECURE_AUTH=true`。此时 mock 不再阻断启动（其余校验仍然生效），但启动日志会打印显著安全告警，提示「任何能访问本服务的人都能自助获得 `sys_admin`」。**请务必同时用反向代理做 IP 白名单**，并尽快切换为 `dingtalk`。
 - **无角色用户登录后被拒绝进入**，提示「未授权，请联系管理员分配角色」。
-- 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写。
+- 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），共 38 个权限码；内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写（新增权限码由迁移补种）。
 - 角色分配有两道护栏：不允许修改**自己**的角色，不允许移除**最后一名**系统管理员。
-- 对外 9 条只读数据接口（`/api/v1/*`）**不加鉴权**，另有 1 个文档接口 `GET /api/v1/openapi.json`。部署时请注意：这些接口会暴露全部库存、采购单价、供应商提前期与销售订单行，建议绑定内网地址或置于反向代理之后。
+- 替代料相关权限单独成码：`masterdata.substitute.view` / `masterdata.substitute.manage` / **`sales.outbound.substitute`**（后者与 `sales.outbound.manage` 分离，便于按角色单独收回「替代出库」能力而不影响正常出库）。
+- 对外 11 条只读数据接口（`/api/v1/*`）**不加鉴权**，另有 1 个文档接口 `GET /api/v1/openapi.json`。部署时请注意：这些接口会暴露全部库存、采购单价、供应商提前期、销售订单行与替代关系，建议绑定内网地址或置于反向代理之后。
 
 ## 目录结构
 
@@ -72,13 +73,14 @@ light-erp/
 │     ├─ db/               # 连接、迁移框架
 │     ├─ migrations/       # SQL 迁移（不依赖 ORM 自动建表）
 │     ├─ plugins/          # 错误处理、鉴权等 Fastify 插件
-│     └─ modules/          # 业务模块：auth / system / masterdata / inventory / purchase / sales（后续阶段继续扩充）
+│     └─ modules/          # 业务模块：auth / system / masterdata / inventory / purchase / sales / substitute / report / dashboard / public-api
 └─ packages/web/           # Vue 3 + Vite + Element Plus
    └─ src/
       ├─ api/              # 统一请求封装（Bearer + 信封解包）
       ├─ layouts/          # 左侧导航 + 页面框架
       ├─ router/           # 路由与登录守卫
       ├─ stores/           # Pinia（auth）
+      ├─ utils/            # 格式化、确认框（confirmAction）
       └─ views/            # 独立页面，按模块分目录
 ```
 
@@ -103,6 +105,8 @@ certification    └→    引用，不被业务改写
 - 在途是派生量，不落字段：采购在途 = 表体 `quantity − received_qty − cancelled_qty`（状态 `confirmed`/`partial`）；调拨在途 = `shipped_qty − received_qty`。
 - 可用量只统计 `available` 状态；`frozen` 与 `qc` 一律不计入。
 - 历史时点（`as_of`）一律从 `stock_transaction` 按 `occurred_at <= as_of` 重算，不用当前余额近似。
+- **替代料**（P10）：`item_substitute` 存「主料 → 替代料」的**单向**规则（优先级 / 整数比例 / 适用仓 / 适用父件 / 场景 / 生效期）；`item_substitute_log` 是替代执行的只增追溯，也是「替代」语义在账本之外的唯一落点。
+- **业务日统一按 UTC+8 划分**（`lib/time.ts` 是唯一换算入口）：业务日期由人填写、时间戳以 UTC 存储，不能直接按 UTC 取日。
 
 数量口径（实物量三状态独立成列，`total_qty` 为三桶合计）：
 
@@ -132,6 +136,8 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 | IF-5b | `GET /api/v1/suppliers/{code}/lead-time-stats` | 供应商提前期聚合 |
 | IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态）。**未指定 `status` 时缺省只返回未结需求（`confirmed` / `partial`）**，与内部 `reserved` 口径一致；如需 `draft` / `cancelled` 须显式传入 |
 | IF-7 | `GET /api/v1/warehouses` | 工厂 / 仓库主数据 |
+| IF-8 | `GET /api/v1/substitutes?main_item_code=&warehouse_code=&scene=&as_of=` | 替代关系清单（按优先级，含适用仓 / 父件 / 比例 / 生效期），供下游自行净算 |
+| IF-9 | `GET /api/v1/substitution-plan?main_item_code=&warehouse_code=&required_qty=&scene=&customer_code=&strategy=&manual_item_codes=&as_of=` | **给定需求直接返回替代分配建议**（分配明细 / 已覆盖 / 缺口 / 跳过原因 / 告警）。只读无副作用 |
 
 ### 约定
 
@@ -245,13 +251,14 @@ curl "http://localhost:3100/api/v1/openapi.json"
 | 往来单位 | `GET/POST /api/masterdata/partners`、`PATCH/DELETE /api/masterdata/partners/:id` |
 | 仓库 | `GET/POST /api/masterdata/warehouses`、`PATCH/DELETE /api/masterdata/warehouses/:id` |
 | BOM | `GET/POST /api/masterdata/boms`（列表可带 `asOf` 只取该日生效版）、`GET /api/masterdata/boms/explode`（多层展开）、`PATCH/DELETE /api/masterdata/boms/:id` |
+| 替代关系 | `GET/POST /api/masterdata/substitutes`、`PATCH/DELETE /api/masterdata/substitutes/:id`（硬删除；停用改 `isActive`）、**`GET /api/masterdata/substitutes/plan`**（需求试算：给定主料/仓/需求量/场景/客户/策略，返回分配建议、缺口与跳过原因；只读） |
 | 库存 | `GET /api/inventory/stocks`（八列口径 / `asOf` 历史时点 / `keyword` `productId` `warehouseId` 筛选）、`GET /api/inventory/balances`（物料×仓库三状态明细）、`GET /api/inventory/transactions`（流水，支持状态/业务类型/日期筛选）、`POST /api/inventory/status-change`（冻结/解冻/送检/质检放行） |
 | 采购 | `GET/POST /api/purchase/orders`、`GET/PATCH/DELETE /api/purchase/orders/:id`、`POST /api/purchase/orders/:id/confirm`（确认）、`POST /api/purchase/orders/:id/cancel`（取消）、`POST /api/purchase/inbound`（行级入库过账）、`GET/POST /api/purchase/returns`（采购退货） |
-| 销售 | `GET/POST /api/sales/orders`、`GET/PATCH/DELETE /api/sales/orders/:id`、`POST /api/sales/orders/:id/confirm`（确认）、`POST /api/sales/orders/:id/cancel`（取消）、`POST /api/sales/outbound`（行级出库过账）、`GET/POST /api/sales/returns`（销售退货） |
+| 销售 | `GET/POST /api/sales/orders`、`GET/PATCH/DELETE /api/sales/orders/:id`、`POST /api/sales/orders/:id/confirm`（确认）、`POST /api/sales/orders/:id/cancel`（取消）、`POST /api/sales/outbound`（行级出库过账，行可带 `allowSubstitute` / `substituteItemId` 使用替代料）、`GET/POST /api/sales/returns`（销售退货） |
 | 库存调拨 | `GET/POST /api/inventory/transfers`、`GET/PATCH/DELETE /api/inventory/transfers/:id`、`POST /api/inventory/transfers/:id/confirm`（确认）、`/cancel`（取消）、`/ship`（整单发货）、`/receive`（整单收货） |
 | 库存盘点 | `GET/POST /api/inventory/stocktakes`、`GET/PATCH/DELETE /api/inventory/stocktakes/:id`、`POST /api/inventory/stocktakes/:id/post`（过账）、`/cancel`（取消） |
 | 库存预警 | `GET/POST /api/inventory/alert-rules`、`PATCH/DELETE /api/inventory/alert-rules/:id`、`GET /api/inventory/alerts`（当前预警清单，不分页） |
-| 报表 | `GET /api/reports/inventory-ledger`（进销存明细账）、`GET /api/reports/stock-snapshot`（库存现状表）、`GET /api/reports/item-movement`（商品收发明细）、`GET /api/reports/supplier-lead-time`（供应商提前期分析）；均需 `report.view`，支持 `format=csv` 同步下载 |
+| 报表 | `GET /api/reports/inventory-ledger`（进销存明细账）、`GET /api/reports/stock-snapshot`（库存现状表）、`GET /api/reports/item-movement`（商品收发明细）、`GET /api/reports/supplier-lead-time`（供应商提前期分析）、`GET /api/reports/substitute-usage`（替代料调用与呆滞）；均需 `report.view`，支持 `format=csv` 同步下载 |
 | 看板 | `GET /api/dashboard/overview`（登录即可，无权限码；一次返回 kpi / trend / alerts / todos 四板块） |
 
 采购单状态机与在途口径：
@@ -341,6 +348,40 @@ BOM 多版本与展开口径：
 - **首页看板**（`GET /api/dashboard/overview`，登录即可）：`kpi`（现存量 / 库存金额 `stock_amount` / 启用物料数 / 在途量 / 预警数，遵循 `port_stock_as_inventory` 默认排除港口仓；库存金额与库存现状表同口径）、`trend`（近 30 个**业务日**逐日出入库，按 UTC+8 分日、排除 `status_change`、无流水补 0 保证 30 点）、`alerts`（`below_min` 优先取前 10）、`todos`（采购草稿 / 待入库采购单 / 销售草稿 / 待出库销售单 / 在途调拨单计数；前端按各目标路由的权限码裁剪卡片）。
 - **导出 = 同步 CSV 下载**：4 张报表均支持 `format=csv`，复用 P7 CSV 行为（UTF-8 BOM、不套信封、告警仅在存在时以 `X-Warnings`（条数）摘要传递），前端以带 `Authorization` 的 `fetch → blob` 触发浏览器下载；**不启用 `export_task` 异步任务 / 导出中心**。查询参数用内部驼峰命名（`dateFrom` / `warehouseId` / ...）。
 
+## 替代料（P10）
+
+主料库存不足时，按预配置规则用替代料兜底。完整方案见 [P10-替代料-实施方案.md](.trae/documents/P10-替代料-实施方案.md)，术语见 [CONTEXT.md](CONTEXT.md)。
+
+### 数据与规则
+
+- `item_substitute`：替代关系主表。**单向**（A→B 与 B→A 是两条记录）；`parent_item_id` 为空表示通用替代、非空表示仅在该父件下可用；`warehouse_id` 为空表示全仓、非空表示仅该仓；同一替代料命中多条时**取更专属的一条**（唯一索引用 `COALESCE(...,0)` 表达式，规避 SQLite 中 NULL 不参与唯一性判断的问题）。
+- `item_substitute_log`：替代执行追溯（只增不改）。账本里替代出库仍是一笔普通 `sale_out`——`stock_transaction.biz_type` 是 CHECK 枚举且 SQLite 无法 `ALTER`，故「这是替代」的语义记在本表（原因见 [ADR 0003](docs/adr/0003-substitution-log-not-biz-type.md)）。
+- **替代比例是整数分子/分母** `ratio_num / ratio_den`：替代料用量 = ⌈缺口 × 分子 ÷ 分母⌉（向上取整，宁可多备），回算覆盖量 = ⌊替代用量 × 分母 ÷ 分子⌋。取整发生在不能整除时会写入 `_warnings`（见 [ADR 0001](docs/adr/0001-integer-substitute-ratio.md)）。
+- **三种策略**：`proportion` 按比例混用（主料优先，缺口由替代料按优先级兜底）／`whole_batch` 整批全量（**不做混用**：主料能全额覆盖就全用主料，否则找单一替代料整批顶上，都做不到时不分配并全量报缺口）／`manual` 手工指定（主料优先，缺口只允许用指定替代料）。
+- **一层不嵌套**：只匹配主料的直接替代料，绝不递归「替代料的替代料」。
+- **只支持同仓**替代（`cross_warehouse` 字段保留但固定 0）。
+- 规划接口（`/substitutes/plan`、IF-9）**只读无副作用**：不预占、不加锁；执行时在**同一事务内**按最新库存重新规划，避免"规划结果跨请求漂移"。
+
+### ⚠ 上线前置条件：客户认证
+
+销售出库场景采用**正向认证**（default-deny）：某替代料要顶替主料给某客户，必须先在物料页维护该客户对该替代料的 `item_customer_certification`（未过期）。否则该替代料会被**跳过**，并在建议结果的 `skipped` / `_warnings` 中给出原因（`customer_not_certified` / `customer_cert_expired`）。
+
+- **不配置认证 = 替代出库完全不可用**（不是"默认可用"）。
+- 该限制**只作用于「替代」这一动作**：客户直接下单购买该物料时，认证与否不影响正常出库。
+- 生产备料（`bom_plan`）与采购建议（`purchase_hint`）场景不传客户，**不受认证限制**。
+
+### 权限
+
+| 权限码 | 作用 |
+| --- | --- |
+| `masterdata.substitute.view` | 查看替代关系与需求试算建议 |
+| `masterdata.substitute.manage` | 维护替代关系（内置角色中仅 `sys_admin`） |
+| `sales.outbound.substitute` | **实际用替代料出库**（与 `sales.outbound.manage` 分离，可按角色单独收回；内置角色中 `salesperson` / `warehouse_keeper` 默认具备） |
+
+### 呆滞判定
+
+`GET /api/reports/substitute-usage` 按替代料聚合调用次数、替代数量与最近调用时间；**自最后一次替代使用起 ≥ 90 个自然日未再使用（或从未使用）即为呆滞**，按业务日（UTC+8）计算。`last_used_at` 与呆滞判定**始终按全部历史**，不受报表的日期区间影响；日期区间只影响 `substitution_count` / `total_sub_qty`。
+
 ## 实施进度
 
 | 阶段 | 内容 | 状态 |
@@ -355,6 +396,7 @@ BOM 多版本与展开口径：
 | P7 | 对外只读接口（7 组 / 9 条）+ OpenAPI | 已完成 |
 | P8 | 报表 + 看板 | 已完成 |
 | P9 | 种子数据 + 验收测试 | 已完成 |
+| P10 | 替代料（关系主数据 + 只读规划 + 销售出库替代 + IF-8/IF-9 + 呆滞报表） | 已完成 |
 
 P1 已落地页面：基础资料（物料管理、物料分类、BOM 管理、往来单位、仓库/工厂管理）、系统设置（用户管理、角色权限）。
 P2 增补页面：库存查询、库存状态管理、库存流水。
@@ -374,10 +416,13 @@ P9 **零迁移**：种子数据不写进迁移，业务单据全部复用既有 
 - 权限码统一收敛至 `packages/shared` 的 `PERMISSIONS` 常量（前端菜单/守卫与后端路由共用）；新增 `v-permission` 按钮级权限指令；写操作路由（新建 / 编辑 / 入库 / 出库）在守卫中按 manage 权限二次校验；补齐系统参数只读页（`/system/params`，权限码 `system.param.view`），菜单分组至此全部激活。
 - **`0006_stock_invariants.sql`**：用触发器为「单据行已执行量 ≤ 订单量」补数据库层兜底（`received_qty + cancelled_qty ≤ quantity`、`shipped_qty + cancelled_qty ≤ quantity`、调拨 `received_qty ≤ shipped_qty ≤ quantity`）。SQLite 无法用 `ALTER TABLE` 追加 CHECK，且订单行表被退货表外键引用，故以触发器实现。**说明**：未对 `stock_balance.quantity` 加非负约束——余额按写入顺序累加，而 `as_of` 按 `occurred_at` 重算，系统明确支持倒挂补录历史单据，此时当前余额可合法为负。
 - **`0007_apidoc_permission_grant.sql`**：`system.apidoc.view` 此前是死权限码（无任何使用点）。前端「数据接口」路由与菜单已改为按它裁剪，该迁移把它授予迁移时已存在的全部角色，保持既有可见范围不变。
+- **`0008_item_substitute.sql`**：替代关系主表 `item_substitute` + 执行追溯表 `item_substitute_log`（含 `COALESCE` 表达式唯一索引与两个查询索引）。
+- **`0009_substitute_permissions.sql`**：补种 3 个替代料权限码并授权。因 `sys_admin` 的权限集现已不可通过接口改写，**迁移是扩展它的唯一通路**（`0002` 的「全量权限」与 `viewer` 的 `LIKE '%.view'` 都是执行时快照，不会自动带上新码）。
 - 日期口径统一为**业务时区 UTC+8**：`lib/time.ts` 是唯一的「日」换算入口，`as_of` / `dateFrom` / `dateTo`、报表默认区间、看板 30 天分日、提前期到货日均按业务日计算（此前按 UTC，UTC+8 部署下本地 00:00–08:00 会算进前一天）。
 - 库存金额统一按**流水累计**取值（`Σ direction × quantity × unit_cost`，排除 `status_change`）：`/api/reports/stock-snapshot` 的 `stock_amount` 与看板 KPI `stock_amount` 与明细账期末金额同口径，不再用「数量 × 加权均价」（后者因逐笔取整会与此口径分离）。
 - 同一请求内**重复提交同一订单行**（`orderItemId`）此前会绕过「在途量 / 未出库量 / 可退量」校验，造成超收入库、超量出库、超量退货（退货为入库，会凭空增加库存）。已在入参层拒绝重复行 + 服务层改为请求内累计校验，并为四个写入口补齐回归测试。
 - 授权改为以数据库为准（停用 / 撤权即时生效）、生产配置启动自检、RBAC 护栏（`sys_admin` 权限集不可改写、不可改自己的角色、不可移除最后一名管理员）、前端 401 同步清理会话、内部报表 CSV 导出不再按分页截断、IF-6 缺省只返回未结需求。
+- **P10 替代料**：新增 `modules/substitute/`（`substitute.plan.ts` 为只读规划深度模块——候选取数、客户认证过滤、三种策略分配、整数比例取整、缺口与跳过原因归集，被销售出库 / 需求试算 / IF-9 / 呆滞报表共用；`substitute.execute.ts` 负责追溯日志）、`GET /api/masterdata/substitutes[/plan]`、销售出库的 `allowSubstitute` / `substituteItemId`、IF-8 / IF-9、`GET /api/reports/substitute-usage`。`stock_transaction` 的账本口径、`as_of` 重算与「余额 = 流水净额」不变量均未改动。
 
 ## 种子数据与验收测试
 
