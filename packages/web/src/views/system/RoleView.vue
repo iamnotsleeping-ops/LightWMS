@@ -76,10 +76,11 @@
 
 <script setup lang="ts">
 import { PERMISSIONS } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface RoleRow {
   id: number;
@@ -222,11 +223,7 @@ async function savePermissions(): Promise<void> {
 }
 
 async function remove(row: RoleRow): Promise<void> {
-  await ElMessageBox.confirm(
-    `确认删除角色「${row.name}」？已分配给用户的角色需先解除分配。`,
-    '删除确认',
-    { type: 'warning' },
-  );
+  if (!(await confirmAction(`确认删除角色「${row.name}」？已分配给用户的角色需先解除分配。`, '删除确认'))) return;
   try {
     await http.del(`/api/system/roles/${row.id}`);
     if (current.value?.id === row.id) current.value = null;

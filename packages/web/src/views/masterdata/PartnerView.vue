@@ -81,10 +81,11 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, type PartnerType } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface PartnerRow {
   id: number;
@@ -203,11 +204,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(row: PartnerRow): Promise<void> {
-  await ElMessageBox.confirm(
-    `确认删除「${row.name}」？若已有业务单据引用将无法删除，可改为停用。`,
-    '删除确认',
-    { type: 'warning' },
-  );
+  if (!(await confirmAction(`确认删除「${row.name}」？若已有业务单据引用将无法删除，可改为停用。`, '删除确认'))) return;
   try {
     await http.del(`/api/masterdata/partners/${row.id}`);
     await load();

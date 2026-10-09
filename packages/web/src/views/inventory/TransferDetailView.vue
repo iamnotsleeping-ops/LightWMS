@@ -57,11 +57,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, TRANSFER_ORDER_STATUS_LABELS, type TransferOrderStatus } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatQty } from '@/utils/format';
 
 interface OrderHeader {
@@ -121,54 +122,28 @@ async function load(): Promise<void> {
 const goBack = () => void router.push({ name: 'transfers' });
 
 async function confirm(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('确认后单据进入已确认状态，可执行发货。', '确认调拨单', {
-      type: 'warning',
-    });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('确认后单据进入已确认状态，可执行发货。', '确认调拨单'))) return;
   await http.post(`/api/inventory/transfers/${route.params.id}/confirm`);
   ElMessage.success('已确认');
   await load();
 }
 
 async function cancel(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('取消后单据作废且不可恢复。', '取消调拨单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('取消后单据作废且不可恢复。', '取消调拨单'))) return;
   await http.post(`/api/inventory/transfers/${route.params.id}/cancel`);
   ElMessage.success('已取消');
   await load();
 }
 
 async function ship(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '发货将按整单数量从调出仓库扣减库存，货物进入在途。',
-      '确认发货',
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('发货将按整单数量从调出仓库扣减库存，货物进入在途。', '确认发货'))) return;
   await http.post(`/api/inventory/transfers/${route.params.id}/ship`);
   ElMessage.success('已发货，货物在途');
   await load();
 }
 
 async function receive(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '收货将按整单数量入库到调入仓库，并按调出仓库当前平均成本结转。',
-      '确认收货',
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('收货将按整单数量入库到调入仓库，并按调出仓库当前平均成本结转。', '确认收货'))) return;
   await http.post(`/api/inventory/transfers/${route.params.id}/receive`);
   ElMessage.success('已收货');
   await load();

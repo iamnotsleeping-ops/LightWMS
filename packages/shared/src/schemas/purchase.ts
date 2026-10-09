@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PURCHASE_ORDER_STATUSES } from '../constants';
-import { dateSchema, optionalText, paginationQuerySchema } from './common';
+import { dateSchema, optionalText, orderItemLinesSchema, paginationQuerySchema } from './common';
 
 const optionalDate = z.preprocess(
   (value) => (value === '' || value === undefined ? undefined : value),
@@ -55,14 +55,7 @@ export const PURCHASE_ORDER_STATUS_SET: ReadonlySet<string> = new Set(PURCHASE_O
 // ---------- 采购入库 ----------
 export const purchaseInboundBodySchema = z.object({
   orderId: z.number().int().positive(),
-  lines: z
-    .array(
-      z.object({
-        orderItemId: z.number().int().positive(),
-        quantity: z.number().int().positive(),
-      }),
-    )
-    .min(1, '至少需要一行入库明细'),
+  lines: orderItemLinesSchema('至少需要一行入库明细'),
   occurredAt: z.string().optional(),
 });
 export type PurchaseInboundBody = z.infer<typeof purchaseInboundBodySchema>;
@@ -72,14 +65,7 @@ export const purchaseReturnBodySchema = z.object({
   orderId: z.number().int().positive(),
   returnDate: dateSchema,
   remark: optionalText(500),
-  lines: z
-    .array(
-      z.object({
-        orderItemId: z.number().int().positive(),
-        quantity: z.number().int().positive(),
-      }),
-    )
-    .min(1, '至少需要一行退货明细'),
+  lines: orderItemLinesSchema('至少需要一行退货明细'),
 });
 export type PurchaseReturnBody = z.infer<typeof purchaseReturnBodySchema>;
 

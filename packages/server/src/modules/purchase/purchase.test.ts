@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { purchaseInboundBodySchema } from '@light-erp/shared';
 import type { Db } from '../../db/connection';
 import { ApiError } from '../../lib/response';
 import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
@@ -244,5 +245,138 @@ describe('验收 3：流水与余额恒等', () => {
       .all();
 
     expect(ledger).toEqual(balances);
+  });
+});
+
+describe('取消单：行级回填取消量', () => {
+  // 回归：cancelled_qty 此前无任何写入路径、恒为 0，而它会出现在对外接口 IF-4 中，
+  // 造成「字段存在但永不生效」的误导。
+  it('取消后 cancelled_qty = 未执行量，且满足 received + cancelled ≤ quantity', () => {
+    const id = createConfirmed([itemBody({ quantity: 100, unit_price: 500 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    cancelOrder(id);
+
+    const item = db
+      .prepare('SELECT quantity, received_qty, cancelled_qty FROM purchase_order_item WHERE id = ?')
+      .get(itemId) as { quantity: number; received_qty: number; cancelled_qty: number };
+    expect(item).toEqual({ quantity: 100, received_qty: 0, cancelled_qty: 100 });
+    expect(getOrderDetail(id).order.status).toBe('cancelled');
+    // 取消后该行不再计入在途
+    expect(
+      db
+        .prepare(
+          `SELECT COALESCE(SUM(i.quantity - i.received_qty - i.cancelled_qty), 0) AS qty
+             FROM purchase_order_item i JOIN purchase_order o ON o.id = i.order_id
+            WHERE o.status IN ('confirmed', 'partial') AND o.id = ?`,
+        )
+        .get(id),
+    ).toEqual({ qty: 0 });
+  });
+
+  it('草稿取消同样回填', () => {
+    const { id } = createDraft([itemBody({ quantity: 30 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    cancelOrder(id);
+
+    expect(
+      (
+        db.prepare('SELECT cancelled_qty FROM purchase_order_item WHERE id = ?').get(itemId) as {
+          cancelled_qty: number;
+        }
+      ).cancelled_qty,
+    ).toBe(30);
+  });
+});
+
+// 回归：同一请求内重复提交同一个 orderItemId 曾可绕过「在途量 / 可退量」校验，
+// 因为校验读的是库中快照而累加发生在过账循环里，最终造成超收入库 / 超量退货。
+describe('回归：同一订单行不得重复提交', () => {
+  it('入参层：重复 orderItemId 被 schema 拒绝', () => {
+    const parsed = purchaseInboundBodySchema.safeParse({
+      orderId: 1,
+      lines: [
+        { orderItemId: 7, quantity: 100 },
+        { orderItemId: 7, quantity: 100 },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((issue) => issue.message)).toContain(
+        '同一订单行不能重复提交，请合并数量后重试',
+      );
+    }
+  });
+
+  it('服务层：重复提交同一行入库被请求内累计校验拦截，库存与单据不变', () => {
+    const id = createConfirmed([itemBody({ quantity: 100, unit_price: 500 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      receivePurchase(
+        {
+          orderId: id,
+          lines: [
+            { orderItemId: itemId, quantity: 100 },
+            { orderItemId: itemId, quantity: 100 },
+          ],
+        },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    expect(transactionCount()).toBe(0);
+    expect(stockBalanceCount()).toBe(0);
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(0);
+    const item = db
+      .prepare('SELECT received_qty FROM purchase_order_item WHERE id = ?')
+      .get(itemId) as { received_qty: number };
+    expect(item.received_qty).toBe(0);
+    expect(getOrderDetail(id).order.status).toBe('confirmed');
+  });
+
+  it('服务层：重复提交同一行退货被请求内累计校验拦截，库存不变', () => {
+    const id = createConfirmed([itemBody({ quantity: 100, unit_price: 500 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+    receivePurchase({ orderId: id, lines: [{ orderItemId: itemId, quantity: 100 }] }, null);
+
+    expect(() =>
+      createPurchaseReturn(
+        {
+          orderId: id,
+          returnDate: '2026-01-20',
+          lines: [
+            { orderItemId: itemId, quantity: 100 },
+            { orderItemId: itemId, quantity: 100 },
+          ],
+        },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    // 未产生采购退货单，库存保持入库后的 100
+    expect(
+      (db.prepare('SELECT COUNT(*) AS c FROM purchase_return').get() as { c: number }).c,
+    ).toBe(0);
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(100);
+  });
+
+  it('数据库层兜底：直接写入超过订单量的 received_qty 被触发器拒绝', () => {
+    const id = createConfirmed([itemBody({ quantity: 100, unit_price: 500 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      db.prepare('UPDATE purchase_order_item SET received_qty = 101 WHERE id = ?').run(itemId),
+    ).toThrow(/已执行量不得超过订单量/);
+    expect(() =>
+      db.prepare('UPDATE purchase_order_item SET received_qty = 100, cancelled_qty = 1 WHERE id = ?').run(itemId),
+    ).toThrow(/已执行量不得超过订单量/);
+
+    // 恰好等于订单量仍允许
+    expect(() =>
+      db.prepare('UPDATE purchase_order_item SET received_qty = 100 WHERE id = ?').run(itemId),
+    ).not.toThrow();
   });
 });

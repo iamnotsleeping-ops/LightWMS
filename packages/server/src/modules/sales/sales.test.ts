@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { salesOutboundBodySchema } from '@light-erp/shared';
 import type { Db } from '../../db/connection';
 import { ApiError } from '../../lib/response';
 import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
@@ -341,5 +342,148 @@ describe('验收：流水与余额恒等', () => {
       .all();
 
     expect(ledger).toEqual(balances);
+  });
+});
+
+describe('取消单：行级回填取消量', () => {
+  // 回归：cancelled_qty 此前无任何写入路径、恒为 0（见 purchase.test.ts 同名说明）
+  it('取消后 cancelled_qty = 未执行量，预留归零', () => {
+    const id = createConfirmed([salesItem({ quantity: 80 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    cancelOrder(id);
+
+    const item = db
+      .prepare('SELECT quantity, shipped_qty, cancelled_qty FROM sales_order_item WHERE id = ?')
+      .get(itemId) as { quantity: number; shipped_qty: number; cancelled_qty: number };
+    expect(item).toEqual({ quantity: 80, shipped_qty: 0, cancelled_qty: 80 });
+    expect(getOrderDetail(id).order.status).toBe('cancelled');
+    // 取消后不再计入预留
+    expect(
+      db
+        .prepare(
+          `SELECT COALESCE(SUM(i.quantity - i.shipped_qty - i.cancelled_qty), 0) AS qty
+             FROM sales_order_item i JOIN sales_order o ON o.id = i.order_id
+            WHERE o.status IN ('confirmed', 'partial') AND o.id = ?`,
+        )
+        .get(id),
+    ).toEqual({ qty: 0 });
+  });
+});
+
+// 回归：同一请求内重复提交同一个 orderItemId 曾可绕过「未出库量 / 可退量」校验。
+// 出库路径的物理可用量会按 (物料, 仓库) 合并后再比对，故不会把库存扣成负数，
+// 但 shipped_qty 仍会超过订单量；退货是入库、没有可用量校验，会直接凭空增加库存。
+describe('回归：同一订单行不得重复提交', () => {
+  it('入参层：重复 orderItemId 被 schema 拒绝', () => {
+    const parsed = salesOutboundBodySchema.safeParse({
+      orderId: 1,
+      lines: [
+        { orderItemId: 7, quantity: 60 },
+        { orderItemId: 7, quantity: 60 },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((issue) => issue.message)).toContain(
+        '同一订单行不能重复提交，请合并数量后重试',
+      );
+    }
+  });
+
+  it('服务层：重复提交同一行出库被拦截，shipped_qty 不超订单量', () => {
+    seedStock(200, 500);
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      shipSales(
+        {
+          orderId: id,
+          lines: [
+            { orderItemId: itemId, quantity: 100 },
+            { orderItemId: itemId, quantity: 100 },
+          ],
+        },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(200);
+    const item = db
+      .prepare('SELECT shipped_qty FROM sales_order_item WHERE id = ?')
+      .get(itemId) as { shipped_qty: number };
+    expect(item.shipped_qty).toBe(0);
+  });
+
+  it('服务层：重复提交同一行退货被拦截，库存不被凭空放大', () => {
+    seedStock(100, 500);
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+    shipSales({ orderId: id, lines: [{ orderItemId: itemId, quantity: 100 }] }, null);
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(0);
+
+    expect(() =>
+      createSalesReturn(
+        {
+          orderId: id,
+          returnDate: '2026-01-20',
+          lines: [
+            { orderItemId: itemId, quantity: 100 },
+            { orderItemId: itemId, quantity: 100 },
+          ],
+        },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    // 未产生销售退货单，库存保持出库后的 0（缺陷版本会变成 100）
+    expect(
+      (db.prepare('SELECT COUNT(*) AS c FROM sales_return').get() as { c: number }).c,
+    ).toBe(0);
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(0);
+  });
+
+  it('累计退货量不得超过已出库量（守恒而非仅逐行）', () => {
+    seedStock(100, 500);
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+    shipSales({ orderId: id, lines: [{ orderItemId: itemId, quantity: 100 }] }, null);
+    createSalesReturn(
+      { orderId: id, returnDate: '2026-01-20', lines: [{ orderItemId: itemId, quantity: 70 }] },
+      null,
+    );
+
+    // 已退 70，再退 31 应被拒（可退 30）
+    expect(() =>
+      createSalesReturn(
+        { orderId: id, returnDate: '2026-01-21', lines: [{ orderItemId: itemId, quantity: 31 }] },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    const returned = db
+      .prepare('SELECT COALESCE(SUM(quantity), 0) AS qty FROM sales_return_item WHERE order_item_id = ?')
+      .get(itemId) as { qty: number };
+    expect(returned.qty).toBe(70);
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(70);
+  });
+
+  it('数据库层兜底：直接写入超过订单量的 shipped_qty 被触发器拒绝', () => {
+    seedStock(200, 500);
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      db.prepare('UPDATE sales_order_item SET shipped_qty = 101 WHERE id = ?').run(itemId),
+    ).toThrow(/已执行量不得超过订单量/);
+    expect(() =>
+      db.prepare('UPDATE sales_order_item SET shipped_qty = 100, cancelled_qty = 1 WHERE id = ?').run(itemId),
+    ).toThrow(/已执行量不得超过订单量/);
+
+    expect(() =>
+      db.prepare('UPDATE sales_order_item SET shipped_qty = 100 WHERE id = ?').run(itemId),
+    ).not.toThrow();
   });
 });

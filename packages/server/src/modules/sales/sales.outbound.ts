@@ -50,15 +50,20 @@ export function shipSales(body: SalesOutboundBody, _userId: number | null): Outb
          FROM sales_order_item WHERE id = ? AND order_id = ?`,
     );
 
-    // 先整体校验未出库量；同 (物料, 仓库) 的请求量合并后再比对物理可用量
+    // 先整体校验未出库量；同 (物料, 仓库) 的请求量合并后再比对物理可用量。
+    // claimed 按订单行累计本请求已提交量：上限取自库中快照，若不在请求内累计，
+    // 同一订单行重复出现时每一行都会独立通过校验而合计超发。
+    const claimed = new Map<number, number>();
     const requested = new Map<string, number>();
     const prepared = body.lines.map((line) => {
       const item = itemStmt.get(line.orderItemId, body.orderId) as OutboundLineDb | undefined;
       if (!item) throw new ApiError(400, '出库明细不属于该销售单');
       const unshipped = item.quantity - item.shipped_qty - item.cancelled_qty;
-      if (line.quantity > unshipped) {
+      const claimedQty = (claimed.get(item.id) ?? 0) + line.quantity;
+      if (claimedQty > unshipped) {
         throw new ApiError(409, `出库数量超过未出库量（未出库 ${unshipped}）`);
       }
+      claimed.set(item.id, claimedQty);
       const key = `${item.product_id}:${item.warehouse_id}`;
       requested.set(key, (requested.get(key) ?? 0) + line.quantity);
       return { line, item };
@@ -154,14 +159,19 @@ export function createSalesReturn(body: SalesReturnBody, userId: number | null):
       'SELECT COALESCE(SUM(quantity), 0) AS qty FROM sales_return_item WHERE order_item_id = ?',
     );
 
+    // claimed 按订单行累计，防止同一订单行重复提交时合计超过可退量（退货为入库，
+    // 若绕过可退量会凭空增加库存）
+    const claimed = new Map<number, number>();
     const prepared = body.lines.map((line) => {
       const source = sourceStmt.get(line.orderItemId, body.orderId) as ReturnLineSource | undefined;
       if (!source) throw new ApiError(400, '退货明细不属于该销售单');
       const alreadyReturned = (returnedStmt.get(source.order_item_id) as { qty: number }).qty;
       const returnable = source.shipped_qty - alreadyReturned;
-      if (line.quantity > returnable) {
+      const claimedQty = (claimed.get(source.order_item_id) ?? 0) + line.quantity;
+      if (claimedQty > returnable) {
         throw new ApiError(409, `退货数量超过可退量（可退 ${returnable}）`);
       }
+      claimed.set(source.order_item_id, claimedQty);
       return { line, source };
     });
 

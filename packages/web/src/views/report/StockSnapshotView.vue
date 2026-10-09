@@ -69,7 +69,8 @@
         <template #default="{ row }">{{ formatAmount(row.avg_cost) }}</template>
       </el-table-column>
       <el-table-column label="库存金额" width="130" align="right">
-        <template #default="{ row }">{{ formatAmount(row.on_hand_amount) }}</template>
+        <!-- 按流水累计的结存金额（含冻结/待检三桶），与「进销存明细账」期末金额同口径 -->
+        <template #default="{ row }">{{ formatAmount(row.stock_amount) }}</template>
       </el-table-column>
     </el-table>
 
@@ -105,7 +106,8 @@ interface SnapshotRow {
   available: number | null;
   projected: number | null;
   avg_cost: number | null;
-  on_hand_amount: number | null;
+  /** 按流水累计的结存金额（分），口径同明细账期末金额 */
+  stock_amount: number;
 }
 
 interface OptionRow {

@@ -29,3 +29,27 @@ export const optionalText = (max: number): z.ZodType<string | undefined> =>
   z.preprocess(emptyToUndefined, z.string().trim().max(max).optional()) as z.ZodType<
     string | undefined
   >;
+
+/** 出入库 / 退货明细行：只允许提交已存在的订单行与正整数数量 */
+export const orderItemLineSchema = z.object({
+  orderItemId: z.number().int().positive(),
+  quantity: z.number().int().positive(),
+});
+export type OrderItemLine = z.infer<typeof orderItemLineSchema>;
+
+/**
+ * 明细行 `orderItemId` 唯一性。
+ *
+ * 服务端的「在途量 / 未出库量 / 可退量」校验都基于**库中当前快照**，同一请求内重复出现同一
+ * 订单行时每一行都会独立通过校验，而累加发生在过账循环里，最终造成超收入库、超量出库或超量
+ * 退货（退货还会凭空增加库存）。因此在入参层直接拒绝重复行，服务层再做请求内累计校验兜底。
+ */
+export const distinctOrderItemIds = (lines: readonly OrderItemLine[]): boolean =>
+  new Set(lines.map((line) => line.orderItemId)).size === lines.length;
+
+/** 明细行数组：至少一行且同一订单行不重复 */
+export const orderItemLinesSchema = (minMessage: string) =>
+  z
+    .array(orderItemLineSchema)
+    .min(1, minMessage)
+    .refine(distinctOrderItemIds, { message: '同一订单行不能重复提交，请合并数量后重试' });

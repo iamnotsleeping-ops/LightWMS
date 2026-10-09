@@ -7,7 +7,14 @@ import type {
 import { getDb } from '../../db/connection';
 import { RECEIPT_CTE, daysBetween, mean, round } from '../../lib/leadtime';
 import type { PageInfo } from '../../lib/response';
-import { normalizeAsOf, queryStockList, queryTransactions } from '../inventory/stock.query';
+import { businessDateOf, businessToday } from '../../lib/time';
+import {
+  normalizeAsOf,
+  queryStockList,
+  queryStockValueByDimension,
+  queryTransactions,
+  type QueryModeOptions,
+} from '../inventory/stock.query';
 
 type Row = Record<string, unknown>;
 
@@ -17,15 +24,17 @@ export interface ReportPaged {
   warnings: string[];
 }
 
+/** 导出（format=csv）时传 `{ all: true }`：跳过 LIMIT/OFFSET 与 JS 切片，返回全部命中行 */
+export type ReportQueryOptions = QueryModeOptions;
+
 // ---------- 通用工具 ----------
 
-/** 缺省区间：本月 1 日 ~ 今日（服务端当日） */
+/** 缺省区间：本月 1 日 ~ 今日（按业务时区 UTC+8 取「日」，与 normalizeAsOf 一致） */
 function defaultRange(dateFrom: string | undefined, dateTo: string | undefined): {
   from: string | null;
   to: string | null;
 } {
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const today = businessToday();
   const monthStart = `${today.slice(0, 7)}-01`;
   return {
     from: normalizeAsOf(dateFrom ?? monthStart, false),
@@ -40,7 +49,10 @@ function defaultRange(dateFrom: string | undefined, dateTo: string | undefined):
  * 状态转移成对写「出 + 入」，计入会让入库、出库两栏同时虚增而净额不变。
  * 金额用流水 unit_cost（分）结转。
  */
-export function queryInventoryLedger(query: LedgerQuery): ReportPaged {
+export function queryInventoryLedger(
+  query: LedgerQuery,
+  options: ReportQueryOptions = {},
+): ReportPaged {
   const db = getDb();
   const { from, to } = defaultRange(query.dateFrom, query.dateTo);
 
@@ -79,13 +91,18 @@ export function queryInventoryLedger(query: LedgerQuery): ReportPaged {
     .prepare(`SELECT COUNT(*) AS total FROM (${inner}) x ${activeWhere}`)
     .get(params) as { total: number };
 
+  const paging = options.all ? '' : 'LIMIT @limit OFFSET @offset';
   const rows = db
     .prepare(
       `SELECT * FROM (${inner}) x ${activeWhere}
         ORDER BY x.product_code, x.warehouse_code
-        LIMIT @limit OFFSET @offset`,
+        ${paging}`,
     )
-    .all({ ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize }) as Record<
+    .all(
+      options.all
+        ? params
+        : { ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize },
+    ) as Record<
     string,
     number | string
   >[];
@@ -117,17 +134,33 @@ export function queryInventoryLedger(query: LedgerQuery): ReportPaged {
 
 // ---------- IF-R2 库存现状表 ----------
 
-/** 复用库存口径清单（on_hand/frozen/qc/total_qty + reserved/in_transit/available/projected），追加金额列 on_hand_amount = on_hand × avg_cost */
-export function queryStockSnapshot(query: StockSnapshotQuery): ReportPaged {
-  const result = queryStockList({
-    page: query.page,
-    pageSize: query.pageSize,
-    keyword: query.keyword,
-    warehouseId: query.warehouseId,
-    asOf: query.asOf,
-  });
+/**
+ * 复用库存口径清单（on_hand/frozen/qc/total_qty + reserved/in_transit/available/projected），
+ * 追加金额列：
+ *   - `stock_amount`：**按流水累计**的结存金额，与 IF-R1 明细账的「期末金额」同口径
+ *     （对应 `total_qty`，不是 available 单桶）。历史时点也能算，只要给 `as_of`。
+ *   - `avg_cost`：移动加权均价，仅作参考；历史时点不可还原，返回 null。
+ *
+ * 此前该列叫 `on_hand_amount = on_hand × avg_cost`，与明细账期末金额会差出几分到几十分
+ * （均价逐笔取整的漂移），两张报表对同一状态给出不同金额，故改为流水累计口径。
+ */
+export function queryStockSnapshot(
+  query: StockSnapshotQuery,
+  options: ReportQueryOptions = {},
+): ReportPaged {
+  const result = queryStockList(
+    {
+      page: query.page,
+      pageSize: query.pageSize,
+      keyword: query.keyword,
+      warehouseId: query.warehouseId,
+      asOf: query.asOf,
+    },
+    options,
+  );
 
   const db = getDb();
+  const amounts = queryStockValueByDimension(db, result.asOf);
   const costs = new Map<string, number>(
     (
       db
@@ -139,18 +172,18 @@ export function queryStockSnapshot(query: StockSnapshotQuery): ReportPaged {
   );
 
   const list: Row[] = result.list.map((row) => {
-    const avgCost = result.asOf ? null : (costs.get(`${row.product_id}:${row.warehouse_id}`) ?? 0);
+    const key = `${row.product_id}:${row.warehouse_id}`;
     return {
       ...row,
-      avg_cost: avgCost,
-      on_hand_amount: avgCost === null ? null : row.on_hand * avgCost,
+      avg_cost: result.asOf ? null : (costs.get(key) ?? 0),
+      stock_amount: amounts.get(key) ?? 0,
     };
   });
 
   const warnings = [`port_stock_as_inventory=${result.portAsInventory}`];
   if (result.asOf) {
     warnings.push(
-      `历史时点（${result.asOf.slice(0, 10)}）仅支持 on_hand / frozen / qc / total_qty；reserved / in_transit / available / projected 依赖单据当时状态不可还原，返回 null；历史平均成本不可还原，avg_cost / on_hand_amount 亦为 null`,
+      `历史时点（${result.asOf.slice(0, 10)}）：on_hand / frozen / qc / total_qty 与 stock_amount 均按 stock_transaction 重算；reserved / in_transit / available / projected 依赖单据当时状态不可还原，返回 null；移动加权均价不可还原，avg_cost 为 null`,
     );
   }
   return { list, page: result.page, warnings };
@@ -159,17 +192,23 @@ export function queryStockSnapshot(query: StockSnapshotQuery): ReportPaged {
 // ---------- IF-R3 商品收发明细 ----------
 
 /** 复用库存流水明细，追加金额列 amount = quantity × unit_cost */
-export function queryItemMovement(query: ItemMovementQuery): ReportPaged {
-  const result = queryTransactions({
-    page: query.page,
-    pageSize: query.pageSize,
-    productId: query.productId,
-    warehouseId: query.warehouseId,
-    stockStatus: query.stockStatus,
-    bizType: query.bizType,
-    dateFrom: query.dateFrom,
-    dateTo: query.dateTo,
-  });
+export function queryItemMovement(
+  query: ItemMovementQuery,
+  options: ReportQueryOptions = {},
+): ReportPaged {
+  const result = queryTransactions(
+    {
+      page: query.page,
+      pageSize: query.pageSize,
+      productId: query.productId,
+      warehouseId: query.warehouseId,
+      stockStatus: query.stockStatus,
+      bizType: query.bizType,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+    },
+    options,
+  );
 
   const list: Row[] = result.list.map((row) => ({
     ...row,
@@ -198,7 +237,10 @@ interface SupplierLeadTimeRow {
  * 全供应商提前期聚合（整单口径）。仅统计有到货记录（biz_type='purchase_in'）的供应商；
  * 实际到货时刻取整单 MIN/MAX occurred_at（流水无行号）。
  */
-export function querySupplierLeadTime(query: SupplierLeadTimeQuery): ReportPaged {
+export function querySupplierLeadTime(
+  query: SupplierLeadTimeQuery,
+  options: ReportQueryOptions = {},
+): ReportPaged {
   const db = getDb();
   const params = {
     keyword: query.keyword ? `%${query.keyword}%` : null,
@@ -285,7 +327,7 @@ export function querySupplierLeadTime(query: SupplierLeadTimeQuery): ReportPaged
       _promised: number[];
       _onTime: number;
     };
-    const receivedDay = row.last_received_at.slice(0, 10);
+    const receivedDay = businessDateOf(row.last_received_at);
     bag.order_count += 1;
     bag._leadTimes.push(daysBetween(row.order_date, receivedDay));
     bag._promised.push(daysBetween(row.order_date, row.max_promised_date));
@@ -315,7 +357,10 @@ export function querySupplierLeadTime(query: SupplierLeadTimeQuery): ReportPaged
   suppliers.sort((a, b) => a.supplier_code.localeCompare(b.supplier_code));
 
   const total = suppliers.length;
-  const start = (query.page - 1) * query.pageSize;
-  const list = suppliers.slice(start, start + query.pageSize) as unknown as Row[];
+  const list = (
+    options.all
+      ? suppliers
+      : suppliers.slice((query.page - 1) * query.pageSize, (query.page - 1) * query.pageSize + query.pageSize)
+  ) as unknown as Row[];
   return { list, page: { page: query.page, pageSize: query.pageSize, total }, warnings: [] };
 }

@@ -1,11 +1,13 @@
 # 轻量级进销存系统
 
-支撑中小商家 / 工厂的采购、销售、库存日常作业，同时对外提供 7 个标准只读数据接口，供下游供应链计划与推演引擎消费。单机或局域网部署，单租户。
+支撑中小商家 / 工厂的采购、销售、库存日常作业，同时对外提供 7 组（共 9 条）标准只读数据接口，供下游供应链计划与推演引擎消费。单机或局域网部署，单租户。
 
 ## 环境要求
 
-- Node.js >= 20
-- pnpm >= 10（仓库使用 `packageManager: pnpm`）
+- Node.js >= 22.13
+- pnpm 11（仓库用 `packageManager: pnpm@11.24.0` 固定版本，pnpm 11 要求 Node >= 22.13）
+
+> 若本机只有 Node 20/21，`pnpm` 自身无法启动被固定的版本；请先升级 Node 或改用 `corepack` 之外的包管理器手动执行 `vitest` / `tsc`（应用代码本身不依赖 Node 22 特性）。
 
 ## 启动
 
@@ -50,9 +52,12 @@ pnpm typecheck      # 全仓类型检查
 ```
 
 - JWT 有效期 8h，走 `Authorization: Bearer`，前端存 `localStorage`；不做 refresh token 与登出黑名单。
+- **授权以数据库为准，不信令牌里的权限快照**：每个受保护请求都会回查 `sys_user.is_active` 与该用户经角色实际持有的权限码。因此**停用账号或撤销角色后立即生效**，无需等令牌过期。（令牌里的 `permissions` 仅用于前端渲染菜单与 `/api/auth/me` 回显。）
+- **生产启动自检**：`NODE_ENV=production` 时若 `AUTH_PROVIDER=mock`、或 `JWT_SECRET` 仍为默认值、或钉钉通道缺少 `APP_KEY`/`APP_SECRET`/`REDIRECT_URI`，后端**拒绝启动**并逐条列出问题。
 - **无角色用户登录后被拒绝进入**，提示「未授权，请联系管理员分配角色」。
-- 权限码格式 `模块.资源.动作`（如 `masterdata.item.create`），内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。
-- 对外 9 个只读数据接口（`/api/v1/*`）**不加鉴权**，另有 1 个文档接口 `GET /api/v1/openapi.json`。
+- 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写。
+- 角色分配有两道护栏：不允许修改**自己**的角色，不允许移除**最后一名**系统管理员。
+- 对外 9 条只读数据接口（`/api/v1/*`）**不加鉴权**，另有 1 个文档接口 `GET /api/v1/openapi.json`。部署时请注意：这些接口会暴露全部库存、采购单价、供应商提前期与销售订单行，建议绑定内网地址或置于反向代理之后。
 
 ## 目录结构
 
@@ -124,7 +129,7 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 | IF-4 | `GET /api/v1/in-transit?as_of=` | 在途 / 采购订单 |
 | IF-5 | `GET /api/v1/purchase-history` | 历史采购订单（提前期） |
 | IF-5b | `GET /api/v1/suppliers/{code}/lead-time-stats` | 供应商提前期聚合 |
-| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态） |
+| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态）。**未指定 `status` 时缺省只返回未结需求（`confirmed` / `partial`）**，与内部 `reserved` 口径一致；如需 `draft` / `cancelled` 须显式传入 |
 | IF-7 | `GET /api/v1/warehouses` | 工厂 / 仓库主数据 |
 
 ### 约定
@@ -133,8 +138,9 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 - **统一信封**：`{ code, message, data, page?, _warnings }`，`code=0` 成功；`_warnings` 为字符串数组，列举本次结果的口径近似与截断提示。
 - **参数命名**：对外接口查询参数一律「蛇形命名」（`snake_case`），与内部业务接口的驼峰命名刻意区分。
 - **分页**：`page` 默认 1，`page_size` 默认 100，上限 1000；分页接口在信封中带 `page`（`page/pageSize/total`）。`/boms`、`/boms/{itemCode}/explode`、`/warehouses` 不分页。
-- **历史时点 `as_of`**：接受 `YYYY-MM-DD`（等价当日 00:00:00）或 ISO 8601 时间戳，缺省取服务端当日。库存一律从 `stock_transaction` 按 `occurred_at <= as_of` 重算。
-- **`format=json|csv`**：缺省 `json`。`csv` 不套信封，带 UTF-8 BOM、列名取首行键序、`null` → 空串、布尔 → `true/false`、含 `,`/`"`/换行的单元格加引号；存在告警时经响应头 `X-Warnings` 返回告警条数。
+- **历史时点 `as_of`**：接受 `YYYY-MM-DD`（等价当日 00:00:00）或 ISO 8601 时间戳。`/boms` 缺省取服务端当日（按 UTC 取日）；`/inventory` 缺省则直接读当前余额（不走重算）。指定 `as_of` 时，库存一律从 `stock_transaction` 按 `occurred_at <= as_of` 重算。
+- **`format=json|csv`**：缺省 `json`。`csv` 不套信封，带 UTF-8 BOM、列名取首行键序、`null` → 空串、布尔 → `true/false`、含 `,`/`"`/换行的单元格加引号（`"` 翻倍）；存在告警时经响应头 `X-Warnings` 返回告警条数。**对外接口的 `csv` 同样受 `page` / `page_size` 约束**（缺省只导出第 1 页 100 行），需要全量请逐页拉取或调大 `page_size`（上限 1000）。
+- **内部报表的 `csv` 不受分页限制**：`/api/reports/*?format=csv` 导出的是当前筛选条件下的**全部**行（分页只作用于 JSON 浏览）。
 
 ### 调用示例
 
@@ -231,7 +237,8 @@ curl "http://localhost:3100/api/v1/openapi.json"
 | --- | --- |
 | 认证 | `GET /api/auth/config`、`GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/auth/mock-login`（mock）、`GET /api/auth/dingtalk/url`、`GET /api/auth/dingtalk/callback`（dingtalk） |
 | 用户 | `GET/POST /api/system/users`、`PATCH /api/system/users/:id`、`PUT /api/system/users/:id/roles` |
-| 角色权限 | `GET /api/system/permissions`、`GET/POST /api/system/roles`、`PATCH/DELETE /api/system/roles/:id`、`PUT /api/system/roles/:id/permissions` |
+| 角色权限 | `GET /api/system/permissions`、`GET/POST /api/system/roles`、`PATCH/DELETE /api/system/roles/:id`、`PUT /api/system/roles/:id/permissions`（`sys_admin` 的权限集不可改写） |
+| 系统参数 | `GET /api/system/params`（只读，需 `system.param.view`） |
 | 物料分类 | `GET/POST /api/masterdata/categories`、`PATCH/DELETE /api/masterdata/categories/:id` |
 | 物料 | `GET/POST /api/masterdata/items`、`GET/PATCH/DELETE /api/masterdata/items/:id`、`PUT /api/masterdata/items/:id/certifications` |
 | 往来单位 | `GET/POST /api/masterdata/partners`、`PATCH/DELETE /api/masterdata/partners/:id` |
@@ -327,10 +334,10 @@ BOM 多版本与展开口径：
 报表与看板口径：
 
 - **进销存明细账**（`report.view`）：按「物料 × 仓库」统计区间收发。期初 = 区间前`direction × quantity`累加，入库/出库 = 区间内 `direction = ±1` 累加，期末 = 期初 + 入库 − 出库；金额列同理用流水 `unit_cost` 结转。**必须排除 `biz_type = 'status_change'`**——状态转移在同一事务内成对写「出 + 入」，计入会让入库、出库两栏同时虚增而净额不变。日期边界：`dateFrom` 取当日 `00:00:00`、`dateTo` 归一到当日末刻；缺省区间为本月 1 日 ~ 今日（服务端当日）。
-- **库存现状表**（`report.view`）：复用库存清单实物量三桶（`on_hand` / `frozen` / `qc`）与派生量（`total_qty` / `reserved` / `in_transit` / `available` / `projected`），追加金额列 `on_hand_amount = on_hand × avg_cost`（成本取 `stock_balance` 的「物料 × 仓库」维度 `avg_cost`）。指定 `asOf` 时历史成本不可还原，`avg_cost` / `on_hand_amount` 返回 `null` 并写入 `_warnings`（与 P7 历史口径一致）。
+- **库存现状表**（`report.view`）：复用库存清单实物量三桶（`on_hand` / `frozen` / `qc`）与派生量（`total_qty` / `reserved` / `in_transit` / `available` / `projected`），追加金额列 `stock_amount` = **按流水累计**的结存金额（`Σ direction × quantity × unit_cost`，排除 `status_change`，对应 `total_qty` 即三桶合计），与「进销存明细账」的期末金额同口径；`avg_cost`（移动加权均价）仅作参考。指定 `asOf` 时 `reserved` / `in_transit` / `available` / `projected` 与 `avg_cost` 返回 `null` 并写入 `_warnings`（与 P7 历史口径一致），而 `stock_amount` 仍可计算。
 - **商品收发明细**（`report.view`）：逐笔流水，字段同库存流水，追加 `amount = quantity × unit_cost`。
 - **供应商提前期分析**（`report.view`）：沿用 P7「整单口径」——流水无行号，实际到货时刻取该单 `biz_type='purchase_in'` 流水的 `MAX occurred_at` 还原到整单。`lead_time_days = 实际到货日 − order_date`；`promised_lead_time_days = max(promised_date) − order_date`；`on_time = 实际到货日 ≤ max(promised_date)`；`on_time_rate = 准时单数 / 已到货单数`。仅统计有到货记录的供应商。
-- **首页看板**（`GET /api/dashboard/overview`，登录即可）：`kpi`（现存量 / 库存金额 / 启用物料数 / 在途量 / 预警数，遵循 `port_stock_as_inventory` 默认排除港口仓）、`trend`（近 30 个自然日逐日出入库，排除 `status_change`、无流水补 0 保证 30 点）、`alerts`（`below_min` 优先取前 10）、`todos`（采购草稿 / 待入库采购单 / 销售草稿 / 待出库销售单 / 在途调拨单计数）。
+- **首页看板**（`GET /api/dashboard/overview`，登录即可）：`kpi`（现存量 / 库存金额 `stock_amount` / 启用物料数 / 在途量 / 预警数，遵循 `port_stock_as_inventory` 默认排除港口仓；库存金额与库存现状表同口径）、`trend`（近 30 个**业务日**逐日出入库，按 UTC+8 分日、排除 `status_change`、无流水补 0 保证 30 点）、`alerts`（`below_min` 优先取前 10）、`todos`（采购草稿 / 待入库采购单 / 销售草稿 / 待出库销售单 / 在途调拨单计数；前端按各目标路由的权限码裁剪卡片）。
 - **导出 = 同步 CSV 下载**：4 张报表均支持 `format=csv`，复用 P7 CSV 行为（UTF-8 BOM、不套信封、告警仅在存在时以 `X-Warnings`（条数）摘要传递），前端以带 `Authorization` 的 `fetch → blob` 触发浏览器下载；**不启用 `export_task` 异步任务 / 导出中心**。查询参数用内部驼峰命名（`dateFrom` / `warehouseId` / ...）。
 
 ## 实施进度
@@ -360,7 +367,16 @@ P8 增补页面：首页看板（KPI 指标卡 + ECharts 近 30 天出入库双�
 P8 **零迁移**：4 张报表与看板全部基于既有账本（`stock_transaction` / `stock_balance`）与单据表计算，`report.view` 权限码已在 `0002_rbac_seed.sql` 就位、`export_task` 表虽在 `0001_init.sql` 预留但本阶段不启用，无新增迁移。
 P9 交付：独立种子脚本（`pnpm seed`）+ 端到端验收测试（`packages/server/src/test/acceptance.test.ts`，共 12 例），在空库上重建全量演示数据并逐阶段核对主数据 / 库存引擎 / 采购 / 销售 / 调拨盘点预警 / 报表 / 看板 / 对外接口。
 P9 **零迁移**：种子数据不写进迁移，业务单据全部复用既有 service 生成，无新增表、索引或迁移。
-后续优化：权限码统一收敛至 `packages/shared` 的 `PERMISSIONS` 常量（前端菜单/守卫与后端路由共用）；新增 `v-permission` 按钮级权限指令；写操作路由（新建 / 编辑 / 入库 / 出库）在守卫中按 manage 权限二次校验；补齐系统参数只读页（`/system/params`，权限码 `system.param.view`），菜单分组至此全部激活。
+
+### 后续优化与审核加固（已完成）
+
+- 权限码统一收敛至 `packages/shared` 的 `PERMISSIONS` 常量（前端菜单/守卫与后端路由共用）；新增 `v-permission` 按钮级权限指令；写操作路由（新建 / 编辑 / 入库 / 出库）在守卫中按 manage 权限二次校验；补齐系统参数只读页（`/system/params`，权限码 `system.param.view`），菜单分组至此全部激活。
+- **`0006_stock_invariants.sql`**：用触发器为「单据行已执行量 ≤ 订单量」补数据库层兜底（`received_qty + cancelled_qty ≤ quantity`、`shipped_qty + cancelled_qty ≤ quantity`、调拨 `received_qty ≤ shipped_qty ≤ quantity`）。SQLite 无法用 `ALTER TABLE` 追加 CHECK，且订单行表被退货表外键引用，故以触发器实现。**说明**：未对 `stock_balance.quantity` 加非负约束——余额按写入顺序累加，而 `as_of` 按 `occurred_at` 重算，系统明确支持倒挂补录历史单据，此时当前余额可合法为负。
+- **`0007_apidoc_permission_grant.sql`**：`system.apidoc.view` 此前是死权限码（无任何使用点）。前端「数据接口」路由与菜单已改为按它裁剪，该迁移把它授予迁移时已存在的全部角色，保持既有可见范围不变。
+- 日期口径统一为**业务时区 UTC+8**：`lib/time.ts` 是唯一的「日」换算入口，`as_of` / `dateFrom` / `dateTo`、报表默认区间、看板 30 天分日、提前期到货日均按业务日计算（此前按 UTC，UTC+8 部署下本地 00:00–08:00 会算进前一天）。
+- 库存金额统一按**流水累计**取值（`Σ direction × quantity × unit_cost`，排除 `status_change`）：`/api/reports/stock-snapshot` 的 `stock_amount` 与看板 KPI `stock_amount` 与明细账期末金额同口径，不再用「数量 × 加权均价」（后者因逐笔取整会与此口径分离）。
+- 同一请求内**重复提交同一订单行**（`orderItemId`）此前会绕过「在途量 / 未出库量 / 可退量」校验，造成超收入库、超量出库、超量退货（退货为入库，会凭空增加库存）。已在入参层拒绝重复行 + 服务层改为请求内累计校验，并为四个写入口补齐回归测试。
+- 授权改为以数据库为准（停用 / 撤权即时生效）、生产配置启动自检、RBAC 护栏（`sys_admin` 权限集不可改写、不可改自己的角色、不可移除最后一名管理员）、前端 401 同步清理会话、内部报表 CSV 导出不再按分页截断、IF-6 缺省只返回未结需求。
 
 ## 种子数据与验收测试
 

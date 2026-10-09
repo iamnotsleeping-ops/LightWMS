@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app';
 import type { Db } from '../db/connection';
 import { hasSeedMarker, seedDemoData } from '../db/seed';
+import { addBusinessDays, businessToday } from '../lib/time';
 import { queryAlerts } from '../modules/inventory/alert.service';
 import { createTestDb } from './db';
 
@@ -16,13 +17,40 @@ let db: Db;
 let app: FastifyInstance;
 let token: string;
 
+/**
+ * 授权以数据库为准（plugins/auth.ts 的 loadAuthState），故需真实用户 + 真实权限关联。
+ * 这里**复用内置 viewer 角色**而不是新建角色，避免污染「空库 sys_role = 5」的验收断言。
+ */
+function createAcceptanceUser(permissionCodes: string[]): number {
+  const now = new Date().toISOString();
+  const userId = Number(
+    db
+      .prepare('INSERT INTO sys_user (name, is_active, created_at, updated_at) VALUES (?, 1, ?, ?)')
+      .run('验收用户', now, now).lastInsertRowid,
+  );
+  const viewerRoleId = (
+    db.prepare("SELECT id FROM sys_role WHERE code = 'viewer'").get() as { id: number }
+  ).id;
+  db.prepare('INSERT INTO sys_user_role (user_id, role_id) VALUES (?, ?)').run(
+    userId,
+    viewerRoleId,
+  );
+  const grant = db.prepare(
+    `INSERT OR IGNORE INTO sys_role_permission (role_id, permission_id)
+     SELECT ?, id FROM sys_permission WHERE code = ?`,
+  );
+  for (const code of permissionCodes) grant.run(viewerRoleId, code);
+  return userId;
+}
+
 beforeEach(async () => {
   db = createTestDb();
   app = await buildApp();
+  const acceptanceUserId = createAcceptanceUser(['report.view', 'masterdata.bom.view']);
   token = app.jwt.sign({
-    sub: 1,
+    sub: acceptanceUserId,
     name: 'acceptance',
-    roles: ['sys_admin'],
+    roles: ['viewer'],
     permissions: ['report.view', 'masterdata.bom.view'],
   });
 });
@@ -31,11 +59,9 @@ afterEach(async () => {
   await app.close();
 });
 
-/** 相对今日的天数 → YYYY-MM-DD（与服务端一致，按 UTC 取日） */
+/** 相对今日的天数 → YYYY-MM-DD（与服务端一致，按业务时区 UTC+8 取日） */
 function day(days: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addBusinessDays(businessToday(), days);
 }
 
 function countTable(table: string): number {
@@ -272,7 +298,32 @@ describe('P9 验收 · 全链路', () => {
     const snapshot = (await authGet('/api/reports/stock-snapshot?pageSize=200')).json();
     expect(snapshot.code).toBe(0);
     expect(snapshot.data.length).toBeGreaterThan(0);
-    expect(typeof snapshot.data[0].on_hand_amount).toBe('number');
+    expect(typeof snapshot.data[0].stock_amount).toBe('number');
+
+    // 金额口径对账：只要有实物库存（total_qty ≠ 0），现状表的 stock_amount 必须等于
+    // 明细账同维度的期末金额。
+    //   · 只比对 total_qty ≠ 0 的行：现状表还会列出「仅存在预留/在途、实物为 0」的维度，
+    //     这些维度的金额为 0，而明细账的 activeWhere 会把全零行整个过滤掉，故无对应行。
+    //   · 对比「现状表 ⊆ 明细账」而非总和：明细账不排除港口仓，现状表默认排除。
+    const ledgerAmountByDimension = new Map<string, number>(
+      (ledger.data as { product_code: string; warehouse_code: string; closing_amount: number }[]).map(
+        (row) => [`${row.product_code}:${row.warehouse_code}`, row.closing_amount],
+      ),
+    );
+    const stocked = (
+      snapshot.data as {
+        product_code: string;
+        warehouse_code: string;
+        total_qty: number;
+        stock_amount: number;
+      }[]
+    ).filter((row) => row.total_qty !== 0);
+    expect(stocked.length).toBeGreaterThan(0);
+
+    for (const row of stocked) {
+      const key = `${row.product_code}:${row.warehouse_code}`;
+      expect(ledgerAmountByDimension.get(key), key).toBe(row.stock_amount);
+    }
 
     const movement = (
       await authGet(`/api/reports/item-movement?dateFrom=${day(-40)}&dateTo=${day(0)}&pageSize=200`)

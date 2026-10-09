@@ -6,7 +6,9 @@
         <div>
           <el-button @click="goBack">返回</el-button>
           <el-button type="primary" plain :loading="saving" @click="save(false)">保存草稿</el-button>
-          <el-button v-permission="PERMISSIONS.purchaseOrderManage" type="primary" :loading="saving" @click="save(true)">保存并确认</el-button>
+          <!-- 「保存并确认」会调用 POST /orders/:id/confirm，该路由要求 purchase.order.confirm，
+               故此处必须用 Confirm 权限码；用 Manage 会让仅有 manage 权限的用户点了必 403 -->
+          <el-button v-permission="PERMISSIONS.purchaseOrderConfirm" type="primary" :loading="saving" @click="save(true)">保存并确认</el-button>
         </div>
       </div>
     </template>

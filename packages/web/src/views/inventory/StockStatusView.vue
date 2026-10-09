@@ -94,10 +94,11 @@ import {
   STATUS_TRANSITION_ACTION_LABELS,
   type StockStatus,
 } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatAmount, formatQty } from '@/utils/format';
 
 interface BalanceRow {
@@ -199,15 +200,7 @@ async function submit(): Promise<void> {
     ElMessage.warning(`数量须在 1 ~ ${max} 之间`);
     return;
   }
-  try {
-    await ElMessageBox.confirm(
-      `确认将「${row.product_name}」在「${row.warehouse_name}」的 ${formatQty(quantity.value, row.qty_precision)} ${row.base_unit} 从「${statusLabel(action.from)}」转为「${statusLabel(action.to)}」？`,
-      `${action.label}确认`,
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`确认将「${row.product_name}」在「${row.warehouse_name}」的 ${formatQty(quantity.value, row.qty_precision)} ${row.base_unit} 从「${statusLabel(action.from)}」转为「${statusLabel(action.to)}」？`, `${action.label}确认`))) return;
   saving.value = true;
   try {
     await http.post('/api/inventory/status-change', {

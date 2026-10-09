@@ -85,11 +85,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, STOCKTAKE_ORDER_STATUS_LABELS, type StocktakeOrderStatus } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface OptionRow {
   id: number;
@@ -169,11 +170,7 @@ const goEdit = (id: number) => void router.push({ name: 'stocktake-edit', params
 const goDetail = (id: number) => void router.push({ name: 'stocktake-detail', params: { id } });
 
 async function remove(row: StocktakeRow): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`删除盘点单 ${row.order_no}？`, '删除盘点单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`删除盘点单 ${row.order_no}？`, '删除盘点单'))) return;
   await http.del(`/api/inventory/stocktakes/${row.id}`);
   ElMessage.success('已删除');
   await load();

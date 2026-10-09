@@ -59,7 +59,8 @@ export function registerSystemRoutes(app: FastifyInstance): void {
     async (request) => {
       const { id } = idParamSchema.parse(request.params);
       const body = userRoleBodySchema.parse(request.body);
-      setUserRoles(id, body.roleIds);
+      // 传入操作者，服务层据此拒绝「修改自己的角色」
+      setUserRoles(id, body.roleIds, request.user.sub);
       return ok({ id });
     },
   );

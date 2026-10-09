@@ -132,10 +132,11 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, BASE_UNITS, BASE_UNIT_LABELS } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface ItemRow {
   id: number;
@@ -286,11 +287,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(row: ItemRow): Promise<void> {
-  await ElMessageBox.confirm(
-    `确认删除物料「${row.name}」？若已有单据或 BOM 引用将无法删除，可改为停用。`,
-    '删除确认',
-    { type: 'warning' },
-  );
+  if (!(await confirmAction(`确认删除物料「${row.name}」？若已有单据或 BOM 引用将无法删除，可改为停用。`, '删除确认'))) return;
   try {
     await http.del(`/api/masterdata/items/${row.id}`);
     await load();

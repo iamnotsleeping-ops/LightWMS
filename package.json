@@ -5,7 +5,7 @@
   "description": "轻量级进销存系统：业务系统 + 供应链计划数据底座",
   "packageManager": "pnpm@11.24.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "pnpm -r --parallel dev",

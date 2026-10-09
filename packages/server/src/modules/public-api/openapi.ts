@@ -401,7 +401,9 @@ export const openapiDocument = {
         summary: 'IF-6 销售订单行',
         description:
           '一行 = 销售单的一行物料。字段：订单号 / 行号 / 订单日期 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
-          '未出库量 = quantity − shipped_qty − cancelled_qty。',
+          '未出库量 = quantity − shipped_qty − cancelled_qty。' +
+          '未指定 status 时缺省只返回未结需求（confirmed / partial），与库存口径的 reserved 一致；' +
+          '如需包含 draft / cancelled 请显式传 status。',
         parameters: [
           keywordParam,
           codeParam('order_no', 'SO-20260101-0001'),

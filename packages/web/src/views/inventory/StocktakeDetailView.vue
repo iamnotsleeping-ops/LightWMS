@@ -59,11 +59,12 @@ import {
   type StockStatus,
   type StocktakeOrderStatus,
 } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatQty } from '@/utils/format';
 
 interface OrderHeader {
@@ -129,26 +130,14 @@ async function load(): Promise<void> {
 const goBack = () => void router.push({ name: 'stocktakes' });
 
 async function post(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '过账后将按实盘量对齐账面库存并生成调整流水，单据不可再修改。',
-      '确认过账',
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('过账后将按实盘量对齐账面库存并生成调整流水，单据不可再修改。', '确认过账'))) return;
   await http.post(`/api/inventory/stocktakes/${route.params.id}/post`);
   ElMessage.success('已过账');
   await load();
 }
 
 async function cancel(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('取消后单据作废且不可恢复。', '取消盘点单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction('取消后单据作废且不可恢复。', '取消盘点单'))) return;
   await http.post(`/api/inventory/stocktakes/${route.params.id}/cancel`);
   ElMessage.success('已取消');
   await load();

@@ -176,7 +176,8 @@ describe('as_of 历史时点', () => {
     expect(atFirst.list[0].on_hand).toBe(100);
 
     const atSecond = queryStockList({ ...stockQuery, asOf: '2026-02-01' });
-    expect(atSecond.asOf).toBe('2026-02-01T23:59:59.999Z');
+    // 业务日（UTC+8）末刻 → 对应 UTC 15:59:59.999Z（本地 2026-02-01 23:59:59.999）
+    expect(atSecond.asOf).toBe('2026-02-01T15:59:59.999Z');
     expect(atSecond.list[0].on_hand).toBe(70);
   });
 

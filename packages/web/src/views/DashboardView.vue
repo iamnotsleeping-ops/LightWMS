@@ -71,15 +71,18 @@
 
 <script setup lang="ts">
 import type { EChartsOption } from 'echarts';
+import { PERMISSIONS, type PermissionCode } from '@light-erp/shared';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import EChart from '@/components/EChart.vue';
+import { useAuthStore } from '@/stores/auth';
 import { formatAmount, formatQty } from '@/utils/format';
 
 interface OverviewKpi {
   on_hand_qty: number;
-  on_hand_amount: number;
+  /** 库存金额：按流水累计的结存价值（含冻结/待检） */
+  stock_amount: number;
   item_count: number;
   in_transit_qty: number;
   alert_count: number;
@@ -122,7 +125,7 @@ const router = useRouter();
 const loading = ref(false);
 const kpi = ref<OverviewKpi>({
   on_hand_qty: 0,
-  on_hand_amount: 0,
+  stock_amount: 0,
   item_count: 0,
   in_transit_qty: 0,
   alert_count: 0,
@@ -144,7 +147,7 @@ function plainQty(value: number): string {
 
 const kpiCards = computed(() => [
   { label: '现存量', value: plainQty(kpi.value.on_hand_qty), hint: '可用状态合计', tone: '' },
-  { label: '库存金额', value: formatAmount(kpi.value.on_hand_amount), hint: '元', tone: '' },
+  { label: '库存金额', value: formatAmount(kpi.value.stock_amount), hint: '元（含冻结/待检）', tone: '' },
   { label: '物料数', value: plainQty(kpi.value.item_count), hint: '启用物料', tone: '' },
   { label: '在途量', value: plainQty(kpi.value.in_transit_qty), hint: '采购 + 调拨', tone: '' },
   {
@@ -187,28 +190,53 @@ const trendOption = computed<EChartsOption>(() => ({
   ],
 }));
 
-const todoCards = computed(() => [
-  { key: 'purchase_draft', label: '采购草稿', count: todos.value.purchase_draft, path: '/purchase/orders' },
-  {
-    key: 'purchase_pending_inbound',
-    label: '待入库采购单',
-    count: todos.value.purchase_pending_inbound,
-    path: '/purchase/inbound',
-  },
-  { key: 'sales_draft', label: '销售草稿', count: todos.value.sales_draft, path: '/sales/orders' },
-  {
-    key: 'sales_pending_outbound',
-    label: '待出库销售单',
-    count: todos.value.sales_pending_outbound,
-    path: '/sales/outbound',
-  },
-  {
-    key: 'transfer_in_transit',
-    label: '在途调拨单',
-    count: todos.value.transfer_in_transit,
-    path: '/inventory/transfers',
-  },
-]);
+const auth = useAuthStore();
+
+/**
+ * 待办卡片按其目标路由所需的权限码裁剪：
+ * 看板接口本身只需登录，低权限用户同样能拿到待办计数；若不过滤，会出现
+ * 「看得到卡片、点进去被路由守卫弹回并提示无权访问」的体验。
+ */
+const todoCards = computed(() => {
+  const cards: { key: string; label: string; count: number; path: string; permission: PermissionCode }[] = [
+    {
+      key: 'purchase_draft',
+      label: '采购草稿',
+      count: todos.value.purchase_draft,
+      path: '/purchase/orders',
+      permission: PERMISSIONS.purchaseOrderView,
+    },
+    {
+      key: 'purchase_pending_inbound',
+      label: '待入库采购单',
+      count: todos.value.purchase_pending_inbound,
+      path: '/purchase/inbound',
+      permission: PERMISSIONS.purchaseInboundManage,
+    },
+    {
+      key: 'sales_draft',
+      label: '销售草稿',
+      count: todos.value.sales_draft,
+      path: '/sales/orders',
+      permission: PERMISSIONS.salesOrderView,
+    },
+    {
+      key: 'sales_pending_outbound',
+      label: '待出库销售单',
+      count: todos.value.sales_pending_outbound,
+      path: '/sales/outbound',
+      permission: PERMISSIONS.salesOutboundManage,
+    },
+    {
+      key: 'transfer_in_transit',
+      label: '在途调拨单',
+      count: todos.value.transfer_in_transit,
+      path: '/inventory/transfers',
+      permission: PERMISSIONS.inventoryTransferView,
+    },
+  ];
+  return cards.filter((card) => auth.has(card.permission));
+});
 
 function go(path: string): void {
   void router.push(path);

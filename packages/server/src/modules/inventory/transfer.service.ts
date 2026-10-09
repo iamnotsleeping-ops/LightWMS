@@ -313,8 +313,13 @@ export function cancelTransfer(id: number): { id: number; status: TransferOrderS
   return db.transaction(() => {
     const existing = headerRow(db, id);
     requireStatus(existing.status, ['draft', 'confirmed'], '仅草稿或已确认的调拨单可取消');
+    const now = new Date().toISOString();
+    // 行级回填取消量，与采购 / 销售取消保持一致（该列此前无任何写入路径）
+    db.prepare(
+      'UPDATE transfer_order_item SET cancelled_qty = quantity - shipped_qty, updated_at = ? WHERE order_id = ?',
+    ).run(now, id);
     db.prepare("UPDATE transfer_order SET status = 'cancelled', updated_at = ? WHERE id = ?").run(
-      new Date().toISOString(),
+      now,
       id,
     );
     return { id, status: 'cancelled' as const };

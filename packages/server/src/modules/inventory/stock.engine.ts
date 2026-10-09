@@ -27,14 +27,21 @@ export interface StatusChangeInput {
   occurredAt?: string;
 }
 
-/** 该物料在该仓库的成本（分）。成本按 (物料, 仓库) 维度，不区分库存状态 */
+/**
+ * 该物料在该仓库的成本（分）。成本按 (物料, 仓库) 维度，不区分库存状态。
+ *
+ * `postMovement` 会把同一 (物料, 仓库) 的三条状态行 `avg_cost` 一并刷新（见文末的
+ * 全仓库 UPDATE），因此三者本应始终相等。这里用 `MAX` 而非 `LIMIT 1` 取值：
+ * 一旦将来出现部分更新导致三者不一致，返回结果仍是确定的，而不是取决于行序。
+ * （`stock.query.ts` 与 `report.service.ts` 也统一用 `MAX(avg_cost)`。）
+ */
 export function readWarehouseCost(db: Db, productId: number, warehouseId: number): number {
   const row = db
     .prepare(
-      'SELECT avg_cost FROM stock_balance WHERE product_id = ? AND warehouse_id = ? LIMIT 1',
+      'SELECT MAX(avg_cost) AS avg_cost FROM stock_balance WHERE product_id = ? AND warehouse_id = ?',
     )
-    .get(productId, warehouseId) as { avg_cost: number } | undefined;
-  return row?.avg_cost ?? 0;
+    .get(productId, warehouseId) as { avg_cost: number | null };
+  return row.avg_cost ?? 0;
 }
 
 /** 该物料在该仓库的全部状态数量之和 */

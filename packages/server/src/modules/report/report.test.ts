@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
-import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
+import { createAuthorizedUser, createTestDb, seedFixtures, type Fixtures } from '../../test/db';
 import { changeStockStatus, postMovement } from '../inventory/stock.engine';
 import { receivePurchase } from '../purchase/purchase.inbound';
 import {
@@ -22,8 +22,11 @@ beforeEach(async () => {
   db = createTestDb();
   fx = seedFixtures(db);
   app = await buildApp();
-  token = app.jwt.sign({ sub: 1, name: 'tester', roles: ['sys_admin'], permissions: REPORT_VIEW });
-  noPermToken = app.jwt.sign({ sub: 2, name: 'guest', roles: [], permissions: [] });
+  // 授权以数据库为准，故落真实用户 + 真实权限关联，而不是伪造 JWT 载荷
+  const viewerId = createAuthorizedUser(db, REPORT_VIEW);
+  const guestId = createAuthorizedUser(db, []);
+  token = app.jwt.sign({ sub: viewerId, name: 'tester', roles: [], permissions: REPORT_VIEW });
+  noPermToken = app.jwt.sign({ sub: guestId, name: 'guest', roles: [], permissions: [] });
 });
 
 afterEach(async () => {
@@ -54,6 +57,19 @@ function addStock(quantity: number, direction: 1 | -1, occurredAt: string, opts?
     unitCost: opts?.unitCost ?? 500,
     occurredAt,
   });
+}
+
+/** 直接建一个物料，返回其 id（用于批量构造超过一页的数据） */
+function makeItem(code: string): number {
+  const now = new Date().toISOString();
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO item (code, name, base_unit, is_active, qty_precision, inspection_required, created_at, updated_at)
+         VALUES (?, ?, 'EA', 1, 0, 0, ?, ?)`,
+      )
+      .run(code, `物料${code}`, now, now).lastInsertRowid,
+  );
 }
 
 /** 建一张已确认采购单（单行），返回 orderId 与 orderItemId */
@@ -181,13 +197,32 @@ describe('IF-R1 进销存明细账', () => {
     expect(body.data[0]).toMatchObject({ in_qty: 100, out_qty: 0, closing_qty: 100 });
   });
 
-  it('dateTo 归一到当日末刻，当日流水不被漏掉', async () => {
-    addStock(70, 1, '2026-04-15T20:00:00.000Z', { unitCost: 500 });
+  // 回归：区间曾按 UTC 取日，UTC+8 部署下本地 00:00–08:00 的流水会被算进前一天。
+  // 现在 dateFrom / dateTo 归一为**业务日**（UTC+8）边界，这里把边界两侧都钉住。
+  it('区间按业务日（UTC+8）划分：本地当日流水不漏，UTC 跨日不再错位', async () => {
+    // 本地 2026-04-15 23:00 = 2026-04-15T15:00:00Z → 业务日 04-15
+    addStock(70, 1, '2026-04-15T15:00:00.000Z', { unitCost: 500 });
+    // 本地 2026-04-16 04:00 = 2026-04-15T20:00:00Z → 业务日 04-16（UTC 日期仍是 04-15）
+    addStock(30, 1, '2026-04-15T20:00:00.000Z', { unitCost: 500 });
+
+    const day15 = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-04-15&dateTo=2026-04-15')
+    ).json();
+    expect(day15.data[0]).toMatchObject({ in_qty: 70, closing_qty: 70 });
+
+    const day16 = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-04-16&dateTo=2026-04-16')
+    ).json();
+    expect(day16.data[0]).toMatchObject({ opening_qty: 70, in_qty: 30, closing_qty: 100 });
+  });
+
+  it('业务日起点边界：本地 00:00:00.000（UTC 前一日 16:00Z）计入当日', async () => {
+    addStock(12, 1, '2026-04-14T16:00:00.000Z', { unitCost: 500 });
 
     const body = (
       await get('/api/reports/inventory-ledger?dateFrom=2026-04-15&dateTo=2026-04-15')
     ).json();
-    expect(body.data[0]).toMatchObject({ in_qty: 70, closing_qty: 70 });
+    expect(body.data[0]).toMatchObject({ in_qty: 12, closing_qty: 12 });
   });
 });
 
@@ -220,7 +255,8 @@ describe('IF-R2 库存现状表', () => {
       qc: 300,
       total_qty: 420,
       avg_cost: 500,
-      on_hand_amount: 50000,
+      // 按流水累计：100×500 + 20×500 + 300×500（三桶合计，与 total_qty 配对）
+      stock_amount: 210000,
     });
 
     const historical = (await get('/api/reports/stock-snapshot?asOf=2026-07-01')).json();
@@ -233,10 +269,33 @@ describe('IF-R2 库存现状表', () => {
       in_transit: null,
       available: null,
       projected: null,
+      // 均价不可还原，但金额由流水累计而来，历史时点同样可算
       avg_cost: null,
-      on_hand_amount: null,
+      stock_amount: 210000,
     });
     expect(historical._warnings.length).toBeGreaterThan(0);
+  });
+});
+
+// 回归：此前「库存金额」用 数量 × 移动加权均价，而明细账期末金额用流水累计，
+// 两者会因均价逐笔取整而分离。这里用仓库自带的漂移算例把两表钉在同一个数上。
+describe('金额口径对账：现状表与明细账必须一致', () => {
+  it('stock_amount ≡ 明细账 closing_amount（均价取整漂移场景）', async () => {
+    addStock(100, 1, '2026-02-05T00:00:00.000Z', { unitCost: 500 });
+    addStock(50, 1, '2026-02-10T00:00:00.000Z', { unitCost: 600 });
+    addStock(30, -1, '2026-02-20T00:00:00.000Z', { bizType: 'sale_out' });
+
+    const ledger = (
+      await get('/api/reports/inventory-ledger?dateFrom=2026-02-01&dateTo=2026-02-28')
+    ).json();
+    const snapshot = (await get('/api/reports/stock-snapshot')).json();
+
+    // 均价 = round(80000 / 150) = 533；120 × 533 = 63960，而流水累计为 64010。
+    // 旧实现的 on_hand_amount 会报 63960，两张报表对同一状态相差 50 分。
+    expect(snapshot.data[0].avg_cost).toBe(533);
+    expect(snapshot.data[0].total_qty).toBe(120);
+    expect(snapshot.data[0].stock_amount).toBe(64010);
+    expect(snapshot.data[0].stock_amount).toBe(ledger.data[0].closing_amount);
   });
 });
 
@@ -330,6 +389,37 @@ describe('format=csv', () => {
       const header = res.body.replace(/^\uFEFF/, '').split('\r\n')[0].split(',');
       expect(header[0], url).toBe(firstColumn);
       expect(res.body, url).not.toContain('"_warnings"');
+    }
+  });
+
+  // 回归：导出曾按默认分页（pageSize=20）只输出第一页，用户点「导出 CSV」得到被静默截断的文件
+  it('导出 CSV 不受分页限制：行数超过默认 pageSize(20) 时仍导出全部行', async () => {
+    const itemCount = 25;
+    for (let index = 1; index <= itemCount; index += 1) {
+      const productId = makeItem(`RM-CSV-${String(index).padStart(3, '0')}`);
+      addStock(10, 1, '2026-06-01T00:00:00.000Z', { unitCost: 500, productId });
+    }
+    const range = 'dateFrom=2026-01-01&dateTo=2026-12-31';
+
+    // 浏览仍分页：JSON 只返回 20 行，但 total 是全量
+    const browsing = (await get(`/api/reports/inventory-ledger?${range}`)).json();
+    expect(browsing.page.total).toBe(itemCount);
+    expect(browsing.data).toHaveLength(20);
+
+    // 导出走全量：表头 + 全部数据行
+    const csvCases: [string, string][] = [
+      [`/api/reports/inventory-ledger?format=csv&${range}`, 'RM-CSV-025'],
+      ['/api/reports/item-movement?format=csv', 'RM-CSV-025'],
+      ['/api/reports/stock-snapshot?format=csv', 'RM-CSV-025'],
+    ];
+
+    for (const [url, lastCode] of csvCases) {
+      const res = await get(url);
+      expect(res.statusCode, url).toBe(200);
+      const lines = res.body.replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+      expect(lines.length, url).toBe(itemCount + 1);
+      expect(res.body, url).toContain('RM-CSV-001');
+      expect(res.body, url).toContain(lastCode);
     }
   });
 });

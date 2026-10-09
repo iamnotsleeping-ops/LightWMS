@@ -361,8 +361,16 @@ export function cancelOrder(id: number): { id: number; status: PurchaseOrderStat
   return db.transaction(() => {
     const existing = orderRow(db, id);
     requireStatus(existing.status, ['draft', 'confirmed'], '仅草稿或已确认的采购单可取消');
+    const now = new Date().toISOString();
+    // 行级回填取消量：未执行部分（quantity − received_qty）记为已取消。
+    // 该字段会被对外接口 IF-4 输出，此前无任何写入路径、恒为 0，属形同虚设；
+    // 回填后 cancelled_qty 如实反映「该行有多少需求被取消」，且满足
+    // received_qty + cancelled_qty <= quantity（由 0006 触发器兜底）。
+    db.prepare(
+      'UPDATE purchase_order_item SET cancelled_qty = quantity - received_qty, updated_at = ? WHERE order_id = ?',
+    ).run(now, id);
     db.prepare("UPDATE purchase_order SET status = 'cancelled', updated_at = ? WHERE id = ?").run(
-      new Date().toISOString(),
+      now,
       id,
     );
     return { id, status: 'cancelled' as const };

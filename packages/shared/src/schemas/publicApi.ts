@@ -113,6 +113,9 @@ export const publicSupplierParamSchema = z.object({
 /**
  * 返回行级明细；`customer_name` 按客户名称精确过滤（返回仍只给客户编码），
  * `order_date` 按订单日期精确匹配，`date_from` / `date_to` 按「要求交期」（due_date）过滤。
+ *
+ * `status` 缺省时服务端只返回未结需求（`confirmed` / `partial`），与内部 `reserved` 口径
+ * 一致；如需包含 `draft` / `cancelled` 必须显式传入。
  */
 export const publicSalesOrdersQuerySchema = publicPaginationSchema.extend({
   keyword: optionalText(100),

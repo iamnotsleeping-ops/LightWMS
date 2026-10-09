@@ -118,7 +118,7 @@ export const MENUS: MenuNode[] = [
       { title: '用户管理', path: '/system/users', permission: PERMISSIONS.systemUserView },
       { title: '角色权限', path: '/system/roles', permission: PERMISSIONS.systemRoleView },
       { title: '系统参数', path: '/system/params', permission: PERMISSIONS.systemParamView },
-      { title: '数据接口', path: '/system/api-docs' },
+      { title: '数据接口', path: '/system/api-docs', permission: PERMISSIONS.systemApidocView },
     ],
   },
 ];

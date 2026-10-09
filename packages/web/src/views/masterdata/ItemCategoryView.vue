@@ -65,10 +65,11 @@
 
 <script setup lang="ts">
 import { PERMISSIONS } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface CategoryRow {
   id: number;
@@ -165,7 +166,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(row: CategoryRow): Promise<void> {
-  await ElMessageBox.confirm(`确认删除分类「${row.name}」？`, '删除确认', { type: 'warning' });
+  if (!(await confirmAction(`确认删除分类「${row.name}」？`, '删除确认'))) return;
   try {
     await http.del(`/api/masterdata/categories/${row.id}`);
     await load();

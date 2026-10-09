@@ -53,14 +53,19 @@ export function receivePurchase(body: PurchaseInboundBody, _userId: number | nul
         WHERE i.id = ? AND i.order_id = ?`,
     );
 
-    // 先整体校验，任一行不合法则整单不入库
+    // 先整体校验，任一行不合法则整单不入库。
+    // claimed 按订单行累计本请求已提交量：数量上限取自库中快照，若不在请求内累计，
+    // 同一订单行重复出现时每一行都会独立通过校验而合计超收。
+    const claimed = new Map<number, number>();
     const prepared = body.lines.map((line) => {
       const item = itemStmt.get(line.orderItemId, body.orderId) as InboundLineDb | undefined;
       if (!item) throw new ApiError(400, '入库明细不属于该采购单');
       const inTransit = item.quantity - item.received_qty - item.cancelled_qty;
-      if (line.quantity > inTransit) {
+      const claimedQty = (claimed.get(item.id) ?? 0) + line.quantity;
+      if (claimedQty > inTransit) {
         throw new ApiError(409, `入库数量超过在途量（在途 ${inTransit}）`);
       }
+      claimed.set(item.id, claimedQty);
       return { line, item };
     });
 
@@ -146,16 +151,20 @@ export function createPurchaseReturn(body: PurchaseReturnBody, userId: number | 
       'SELECT COALESCE(SUM(quantity), 0) AS qty FROM purchase_return_item WHERE order_item_id = ?',
     );
 
-    // 校验可退量与源仓可用量；同 (物料, 仓库) 的请求量合并后再比对，避免多行叠加超标
+    // 校验可退量与源仓可用量；同 (物料, 仓库) 的请求量合并后再比对，避免多行叠加超标。
+    // claimed 按订单行累计，防止同一订单行重复提交时合计超过可退量。
+    const claimed = new Map<number, number>();
     const requested = new Map<string, number>();
     const prepared = body.lines.map((line) => {
       const source = sourceStmt.get(line.orderItemId, body.orderId) as ReturnLineSource | undefined;
       if (!source) throw new ApiError(400, '退货明细不属于该采购单');
       const alreadyReturned = (returnedStmt.get(source.order_item_id) as { qty: number }).qty;
       const returnable = source.received_qty - alreadyReturned;
-      if (line.quantity > returnable) {
+      const claimedQty = (claimed.get(source.order_item_id) ?? 0) + line.quantity;
+      if (claimedQty > returnable) {
         throw new ApiError(409, `退货数量超过可退量（可退 ${returnable}）`);
       }
+      claimed.set(source.order_item_id, claimedQty);
       const key = `${source.product_id}:${source.warehouse_id}`;
       requested.set(key, (requested.get(key) ?? 0) + line.quantity);
       return { line, source };

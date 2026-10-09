@@ -268,7 +268,7 @@ const routes: RouteRecordRaw[] = [
         path: 'system/api-docs',
         name: 'system-api-docs',
         component: ApiDocsView,
-        meta: { title: '数据接口' },
+        meta: { title: '数据接口', permission: PERMISSIONS.systemApidocView },
       },
     ],
   },

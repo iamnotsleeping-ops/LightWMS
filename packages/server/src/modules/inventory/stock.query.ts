@@ -2,6 +2,7 @@ import type { BalanceQuery, InventoryQuery, StockTransactionQuery } from '@light
 import { getDb, type Db } from '../../db/connection';
 import { config } from '../../config/index';
 import type { PageInfo } from '../../lib/response';
+import { businessDayEnd, businessDayStart } from '../../lib/time';
 
 export interface StockRow {
   product_id: number;
@@ -66,6 +67,58 @@ export interface Paged<T> {
   page: PageInfo;
 }
 
+/**
+ * 查询模式。
+ * `all: true` 用于导出场景：跳过 LIMIT/OFFSET 返回全部命中行。
+ * 分页参数（含 pageSize 上限）只约束浏览，不应让「导出 CSV」静默截断成当前页。
+ */
+export interface QueryModeOptions {
+  all?: boolean;
+}
+
+/**
+ * 各 (物料, 仓库) 的库存金额（分）：**按流水累计**的结存价值。
+ *
+ * 与进销存明细账的「期末金额」同口径：`Σ(direction × quantity × unit_cost)`，
+ * 排除 `status_change`（其成对出入净额为 0）。
+ *
+ * 刻意**不用**「数量 × 移动加权均价」：`postMovement` 在每次入库时对均价取整到分，
+ * 逐笔累计后两个口径会分离（仓库自带示例数据即可差出几十分），而流水累计是唯一能同时
+ * 支撑「明细账期末」与「库存 / 看板金额」的可对账口径。
+ *
+ * 注意：该金额对应**物理总量**（available + frozen + qc），与 `total_qty` 配对；
+ * available 单桶金额不由本函数给出。
+ */
+export function queryStockValueByDimension(
+  db: Db,
+  asOf: string | null = null,
+): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT product_id, warehouse_id, SUM(direction * quantity * unit_cost) AS amount
+         FROM stock_transaction
+        WHERE biz_type <> 'status_change'
+          AND (@asOf IS NULL OR occurred_at <= @asOf)
+        GROUP BY product_id, warehouse_id`,
+    )
+    .all({ asOf }) as { product_id: number; warehouse_id: number; amount: number }[];
+  return new Map(rows.map((row) => [`${row.product_id}:${row.warehouse_id}`, row.amount]));
+}
+
+/** 库存总金额（分）；口径同 `queryStockValueByDimension`，可按仓库类型排除港口仓 */
+export function queryStockValueTotal(db: Db, portAsInventory: boolean): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(t.direction * t.quantity * t.unit_cost), 0) AS amount
+         FROM stock_transaction t
+         JOIN warehouse w ON w.id = t.warehouse_id
+        WHERE t.biz_type <> 'status_change'
+          AND (@portAsInventory = 1 OR w.type <> 'port')`,
+    )
+    .get({ portAsInventory: portAsInventory ? 1 : 0 }) as { amount: number };
+  return row.amount;
+}
+
 /** 读取港口仓库存口径参数，缺失时回退到环境默认值 */
 export function readPortStockAsInventory(db: Db): boolean {
   const row = db
@@ -75,11 +128,17 @@ export function readPortStockAsInventory(db: Db): boolean {
   return row.value === 'true' || row.value === '1';
 }
 
-/** YYYY-MM-DD 归一为当日末刻，ISO 原样返回；未传返回 null */
+/**
+ * 把 `YYYY-MM-DD` 归一为**业务日**（UTC+8）的起止时刻（UTC ISO），ISO 时间戳原样返回，
+ * 未传返回 null。
+ *
+ * 注意产出统一是 `...Z` 形式：库中 `occurred_at` 亦为 `toISOString()`，两者可直接做
+ * 字符串比较；若这里产出 `+08:00` 形式，字典序比较会失真。
+ */
 export function normalizeAsOf(value: string | undefined, endOfDay: boolean): string | null {
   if (!value) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return `${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`;
+    return endOfDay ? businessDayEnd(value) : businessDayStart(value);
   }
   return value;
 }
@@ -111,7 +170,10 @@ function filterParams(filters: QueryFilters): Record<string, unknown> {
  * 单据派生量：reserved / in_transit 历史时点无法还原，仅在当前时点返回。
  * available = on_hand − reserved；projected = on_hand + in_transit − reserved。
  */
-export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portAsInventory: boolean; asOf: string | null } {
+export function queryStockList(
+  query: InventoryQuery,
+  options: QueryModeOptions = {},
+): Paged<StockRow> & { portAsInventory: boolean; asOf: string | null } {
   const db = getDb();
   const portAsInventory = readPortStockAsInventory(db);
   const asOf = normalizeAsOf(query.asOf, true);
@@ -197,6 +259,7 @@ export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portA
     db.prepare(`${cte} SELECT COUNT(*) AS total ${joins} ${where}`).get(params) as { total: number }
   ).total;
 
+  const paging = options.all ? '' : 'LIMIT @limit OFFSET @offset';
   const rows = db
     .prepare(
       `${cte}
@@ -211,9 +274,13 @@ export function queryStockList(query: InventoryQuery): Paged<StockRow> & { portA
               COALESCE(t.qty, 0) AS in_transit
        ${joins} ${where}
        ORDER BY p.code, w.code
-       LIMIT @limit OFFSET @offset`,
+       ${paging}`,
     )
-    .all({ ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize }) as {
+    .all(
+      options.all
+        ? params
+        : { ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize },
+    ) as {
     product_id: number;
     product_code: string;
     product_name: string;
@@ -278,7 +345,10 @@ export function queryBalances(query: BalanceQuery): BalanceRow[] {
     .all(filterParams(query)) as BalanceRow[];
 }
 
-export function queryTransactions(query: StockTransactionQuery): Paged<TransactionRow> {
+export function queryTransactions(
+  query: StockTransactionQuery,
+  options: QueryModeOptions = {},
+): Paged<TransactionRow> {
   const db = getDb();
   const dateFrom = normalizeAsOf(query.dateFrom, false);
   const dateTo = normalizeAsOf(query.dateTo, true);
@@ -306,6 +376,7 @@ export function queryTransactions(query: StockTransactionQuery): Paged<Transacti
     }
   ).total;
 
+  const paging = options.all ? '' : 'LIMIT @limit OFFSET @offset';
   const list = db
     .prepare(
       `SELECT t.id, t.product_id, p.code AS product_code, p.name AS product_name,
@@ -318,9 +389,13 @@ export function queryTransactions(query: StockTransactionQuery): Paged<Transacti
          JOIN warehouse w ON w.id = t.warehouse_id
          ${where}
         ORDER BY t.occurred_at DESC, t.id DESC
-        LIMIT @limit OFFSET @offset`,
+        ${paging}`,
     )
-    .all({ ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize }) as TransactionRow[];
+    .all(
+      options.all
+        ? params
+        : { ...params, limit: query.pageSize, offset: (query.page - 1) * query.pageSize },
+    ) as TransactionRow[];
 
   return { list, page: { page: query.page, pageSize: query.pageSize, total } };
 }

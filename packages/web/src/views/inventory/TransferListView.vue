@@ -111,11 +111,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, TRANSFER_ORDER_STATUS_LABELS, type TransferOrderStatus } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatQty } from '@/utils/format';
 
 interface OptionRow {
@@ -200,33 +201,21 @@ const goEdit = (id: number) => void router.push({ name: 'transfer-edit', params:
 const goDetail = (id: number) => void router.push({ name: 'transfer-detail', params: { id } });
 
 async function confirm(row: TransferRow): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`确认调拨单 ${row.order_no}？`, '确认调拨单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`确认调拨单 ${row.order_no}？`, '确认调拨单'))) return;
   await http.post(`/api/inventory/transfers/${row.id}/confirm`);
   ElMessage.success('已确认');
   await load();
 }
 
 async function cancel(row: TransferRow): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`取消调拨单 ${row.order_no}？`, '取消调拨单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`取消调拨单 ${row.order_no}？`, '取消调拨单'))) return;
   await http.post(`/api/inventory/transfers/${row.id}/cancel`);
   ElMessage.success('已取消');
   await load();
 }
 
 async function remove(row: TransferRow): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`删除调拨单 ${row.order_no}？`, '删除调拨单', { type: 'warning' });
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`删除调拨单 ${row.order_no}？`, '删除调拨单'))) return;
   await http.del(`/api/inventory/transfers/${row.id}`);
   ElMessage.success('已删除');
   await load();

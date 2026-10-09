@@ -312,9 +312,9 @@ export function postStocktake(id: number, occurredAt?: string): StocktakePostRes
       ];
       const delta = line.counted_qty - bookNow;
 
-      if (bookNow + delta < 0) {
-        throw new ApiError(409, '盘亏数量超过账面库存');
-      }
+      // 此处无需再校验「盘亏是否超过账面」：过账的语义就是把余额对齐到实盘量
+      // （counted_qty ≥ 0 已由 zod 保证），盘盈盘亏本身都允许。
+      // 曾有一条 `if (bookNow + delta < 0)` 守卫，等价于 `counted_qty < 0`，恒不成立。
 
       if (delta !== 0) {
         const transactionId = postMovement({

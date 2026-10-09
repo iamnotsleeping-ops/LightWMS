@@ -1,4 +1,5 @@
 import { ApiError } from './response';
+import { businessToday } from './time';
 
 /** 把 SQLite 约束冲突翻译成可读的业务错误，其余错误原样抛出 */
 export function rethrowConstraint(error: unknown, uniqueMessage: string): never {
@@ -15,8 +16,9 @@ export function rethrowConstraint(error: unknown, uniqueMessage: string): never 
   throw error;
 }
 
+/** 服务端「当日」——按业务时区（UTC+8）取，而非 UTC 日期，避免本地凌晨被算作前一天 */
 export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return businessToday();
 }
 
 /** 由「列名 → 值」构造 UPDATE 的 SET 片段，值为 undefined 的列跳过 */

@@ -2,6 +2,10 @@ node_modules/
 dist/
 coverage/
 
+# pnpm 项目本地存储（store-dir 指向仓库内时产生）
+.pnpm-store/
+.npm-cache/
+
 # 本地数据库
 data/
 *.db

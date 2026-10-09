@@ -47,10 +47,10 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessageBox } from 'element-plus';
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { visibleMenus } from './menu';
 
 const route = useRoute();
@@ -62,7 +62,7 @@ const roleText = computed(() => auth.user?.roles.map((role) => role.name).join('
 
 async function onCommand(command: string): Promise<void> {
   if (command !== 'logout') return;
-  await ElMessageBox.confirm('确认退出登录？', '提示', { type: 'warning' });
+  if (!(await confirmAction('确认退出登录？', '提示'))) return;
   await auth.logout();
   await router.replace('/login');
 }

@@ -197,10 +197,11 @@ import {
   PERMISSIONS,
   type AlertType,
 } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatQty } from '@/utils/format';
 
 interface Option {
@@ -392,15 +393,7 @@ async function submit(): Promise<void> {
 }
 
 async function remove(row: RuleRow): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `删除「${row.product_name}」${row.warehouse_name ? `（${row.warehouse_name}）` : '（全局）'} 的预警规则？`,
-      '删除预警规则',
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
+  if (!(await confirmAction(`删除「${row.product_name}」${row.warehouse_name ? `（${row.warehouse_name}）` : '（全局）'} 的预警规则？`, '删除预警规则'))) return;
   await http.del(`/api/inventory/alert-rules/${row.id}`);
   ElMessage.success('已删除');
   await refreshAll();

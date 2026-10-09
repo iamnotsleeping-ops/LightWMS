@@ -109,11 +109,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, PURCHASE_ORDER_STATUS_LABELS, type PurchaseOrderStatus } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatAmount, formatQty } from '@/utils/format';
 
 interface OrderRow {
@@ -199,29 +200,21 @@ const goEdit = (id: number) => void router.push({ name: 'purchase-order-edit', p
 const goDetail = (id: number) => void router.push({ name: 'purchase-order-detail', params: { id } });
 
 async function confirm(row: OrderRow): Promise<void> {
-  await ElMessageBox.confirm(`确认采购单「${row.order_no}」？确认后表体不可修改，其数量将计入采购在途。`, '确认采购单', {
-    type: 'warning',
-  });
+  if (!(await confirmAction(`确认采购单「${row.order_no}」？确认后表体不可修改，其数量将计入采购在途。`, '确认采购单'))) return;
   await http.post(`/api/purchase/orders/${row.id}/confirm`);
   ElMessage.success('已确认');
   await load();
 }
 
 async function cancel(row: OrderRow): Promise<void> {
-  await ElMessageBox.confirm(
-    `取消采购单「${row.order_no}」？取消后其数量将从采购在途统计中移除。`,
-    '取消采购单',
-    { type: 'warning' },
-  );
+  if (!(await confirmAction(`取消采购单「${row.order_no}」？取消后其数量将从采购在途统计中移除。`, '取消采购单'))) return;
   await http.post(`/api/purchase/orders/${row.id}/cancel`);
   ElMessage.success('已取消');
   await load();
 }
 
 async function remove(row: OrderRow): Promise<void> {
-  await ElMessageBox.confirm(`删除草稿采购单「${row.order_no}」？其表体将一并删除。`, '删除确认', {
-    type: 'warning',
-  });
+  if (!(await confirmAction(`删除草稿采购单「${row.order_no}」？其表体将一并删除。`, '删除确认'))) return;
   await http.del(`/api/purchase/orders/${row.id}`);
   ElMessage.success('已删除');
   await load();

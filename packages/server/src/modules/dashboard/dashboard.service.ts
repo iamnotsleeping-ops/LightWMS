@@ -1,10 +1,18 @@
 import { getDb } from '../../db/connection';
+import {
+  SQLITE_BUSINESS_DAY,
+  businessDateRange,
+  businessDayStart,
+  businessToday,
+} from '../../lib/time';
 import { queryAlerts, type AlertRow } from '../inventory/alert.service';
-import { readPortStockAsInventory } from '../inventory/stock.query';
+import { queryStockValueTotal, readPortStockAsInventory } from '../inventory/stock.query';
 
 export interface DashboardKpi {
+  /** available 桶现有量（与库存现状表 on_hand 同口径） */
   on_hand_qty: number;
-  on_hand_amount: number;
+  /** 库存金额：按流水累计的结存价值，含 available / frozen / qc 三桶 */
+  stock_amount: number;
   item_count: number;
   in_transit_qty: number;
   alert_count: number;
@@ -60,16 +68,20 @@ export function dashboardOverview(): DashboardOverview {
   const portFlag = portAsInventory ? 1 : 0;
 
   // ---------- kpi ----------
+  // 数量：available 桶现有量
   const hand = db
     .prepare(
-      `SELECT COALESCE(SUM(b.quantity), 0) AS qty,
-              COALESCE(SUM(b.quantity * b.avg_cost), 0) AS amount
+      `SELECT COALESCE(SUM(b.quantity), 0) AS qty
          FROM stock_balance b
          JOIN warehouse w ON w.id = b.warehouse_id
         WHERE b.stock_status = 'available'
           AND (@portAsInventory = 1 OR w.type <> 'port')`,
     )
-    .get({ portAsInventory: portFlag }) as { qty: number; amount: number };
+    .get({ portAsInventory: portFlag }) as { qty: number };
+
+  // 金额：与「库存现状表 stock_amount」「明细账期末金额」同口径——按流水累计
+  // （含 available / frozen / qc 三桶），不再用 数量 × 均价，避免与报表口径分离。
+  const stockAmount = queryStockValueTotal(db, portFlag === 1);
 
   const itemCount = (db.prepare('SELECT COUNT(*) AS n FROM item WHERE is_active = 1').get() as {
     n: number;
@@ -101,23 +113,21 @@ export function dashboardOverview(): DashboardOverview {
 
   const kpi: DashboardKpi = {
     on_hand_qty: hand.qty,
-    on_hand_amount: hand.amount,
+    stock_amount: stockAmount,
     item_count: itemCount,
     in_transit_qty: purchaseTransit.qty + transferTransit.qty,
     alert_count: alerts.length,
   };
 
-  // ---------- trend（近 30 个自然日，含今日） ----------
-  const dayMs = 86_400_000;
-  const today = new Date();
-  const startMs =
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) -
-    (TREND_DAYS - 1) * dayMs;
-  const startIso = new Date(startMs).toISOString();
+  // ---------- trend（近 30 个自然日，含今日；按业务时区 UTC+8 分日） ----------
+  // 分日必须与业务日一致：SQLite 侧用 date(occurred_at, '+8 hours') 换算，
+  // 轴上的日期由 businessDateRange 生成；否则本地凌晨发生的出入库会被计入前一天。
+  const trendDates = businessDateRange(businessToday(), TREND_DAYS);
+  const startIso = businessDayStart(trendDates[0]);
 
   const daily = db
     .prepare(
-      `SELECT substr(t.occurred_at, 1, 10) AS day,
+      `SELECT ${SQLITE_BUSINESS_DAY} AS day,
               SUM(CASE WHEN t.direction = 1 THEN t.quantity ELSE 0 END) AS in_qty,
               SUM(CASE WHEN t.direction = -1 THEN t.quantity ELSE 0 END) AS out_qty
          FROM stock_transaction t
@@ -127,12 +137,10 @@ export function dashboardOverview(): DashboardOverview {
     .all({ from: startIso }) as { day: string; in_qty: number; out_qty: number }[];
 
   const byDay = new Map(daily.map((row) => [row.day, row]));
-  const trend: DashboardTrendPoint[] = [];
-  for (let i = 0; i < TREND_DAYS; i += 1) {
-    const date = new Date(startMs + i * dayMs).toISOString().slice(0, 10);
+  const trend: DashboardTrendPoint[] = trendDates.map((date) => {
     const found = byDay.get(date);
-    trend.push({ date, in_qty: found?.in_qty ?? 0, out_qty: found?.out_qty ?? 0 });
-  }
+    return { date, in_qty: found?.in_qty ?? 0, out_qty: found?.out_qty ?? 0 };
+  });
 
   // ---------- alerts（below_min 优先，取前 10） ----------
   const topAlerts = [...alerts]

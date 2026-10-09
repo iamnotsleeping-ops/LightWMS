@@ -213,13 +213,27 @@ export function explodeBom(query: BomExplodeQuery, db: Db = getDb()): BomExplode
   const warnings: string[] = [];
   let depthWarned = false;
 
+  /**
+   * 单次展开内按父件缓存生效行。
+   * 同一父件在 `walk` 里会被访问两次（一次取子件、一次判断 `isLeaf`），
+   * 且多层 BOM 中同一子件可能被多个父件引用；不缓存会退化成每节点 2 次查询。
+   */
+  const childrenCache = new Map<number, EffectiveLine[]>();
+  const childrenOf = (parentItemId: number): EffectiveLine[] => {
+    const cached = childrenCache.get(parentItemId);
+    if (cached) return cached;
+    const rows = resolveEffectiveLines(parentItemId, asOf, db);
+    childrenCache.set(parentItemId, rows);
+    return rows;
+  };
+
   const walk = (
     parentItemId: number,
     parentRequired: number,
     level: number,
     path: ItemRef[],
   ): void => {
-    const children = resolveEffectiveLines(parentItemId, asOf, db);
+    const children = childrenOf(parentItemId);
     if (children.length === 0) return;
     if (level > BOM_EXPLODE_MAX_DEPTH) {
       if (!depthWarned) {
@@ -259,7 +273,7 @@ export function explodeBom(query: BomExplodeQuery, db: Db = getDb()): BomExplode
         continue;
       }
 
-      node.isLeaf = resolveEffectiveLines(child.child_item_id, asOf, db).length === 0;
+      node.isLeaf = childrenOf(child.child_item_id).length === 0;
       lines.push(node);
       if (!node.isLeaf) {
         walk(child.child_item_id, requiredQty, level + 1, [

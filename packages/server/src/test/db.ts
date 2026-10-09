@@ -68,3 +68,47 @@ export function seedFixtures(db: Db): Fixtures {
     customerId: Number(customer.lastInsertRowid),
   };
 }
+
+/**
+ * 给已存在的用户追加一个持有指定权限码的角色。
+ * 用于「必须以某个特定用户身份发请求」的用例（例如校验操作者自身身份的护栏）。
+ */
+export function grantPermissions(db: Db, userId: number, permissionCodes: string[]): void {
+  if (permissionCodes.length === 0) return;
+  const now = new Date().toISOString();
+  const roleId = Number(
+    db
+      .prepare('INSERT INTO sys_role (code, name, description) VALUES (?, ?, ?)')
+      .run(`test_role_${userId}_${now}`, `测试角色 ${userId}`, '测试用角色').lastInsertRowid,
+  );
+  const insert = db.prepare(
+    `INSERT INTO sys_role_permission (role_id, permission_id)
+     SELECT ?, id FROM sys_permission WHERE code = ?`,
+  );
+  for (const code of permissionCodes) insert.run(roleId, code);
+  db.prepare('INSERT OR IGNORE INTO sys_user_role (user_id, role_id) VALUES (?, ?)').run(
+    userId,
+    roleId,
+  );
+}
+
+/**
+ * 建一个「启用 + 持有指定权限码」的真实用户，返回 `sys_user.id`。
+ *
+ * 授权以数据库为准（见 plugins/auth.ts 的 loadAuthState），因此 HTTP 层用例不能再用
+ * `jwt.sign({ sub: 1, permissions: [...] })` 伪造身份，必须落一条真实用户 + 角色 +
+ * 权限关联。传空数组即得到「已登录但无任何业务权限」的用户。
+ */
+export function createAuthorizedUser(db: Db, permissionCodes: string[]): number {
+  const now = new Date().toISOString();
+  const userId = Number(
+    db
+      .prepare(
+        'INSERT INTO sys_user (name, is_active, created_at, updated_at) VALUES (?, 1, ?, ?)',
+      )
+      .run(`测试用户-${permissionCodes.length}-${now}`, now, now).lastInsertRowid,
+  );
+
+  grantPermissions(db, userId, permissionCodes);
+  return userId;
+}

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
-import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
+import { createAuthorizedUser, createTestDb, seedFixtures, type Fixtures } from '../../test/db';
+import { businessToday } from '../../lib/time';
 import { createAlertRule, queryAlerts } from '../inventory/alert.service';
 import { changeStockStatus, postMovement } from '../inventory/stock.engine';
 import {
@@ -28,8 +29,9 @@ beforeEach(async () => {
   db = createTestDb();
   fx = seedFixtures(db);
   app = await buildApp();
-  // 看板仅需登录，无权限码
-  token = app.jwt.sign({ sub: 1, name: 'tester', roles: ['viewer'], permissions: [] });
+  // 看板仅需登录、无权限码；授权以数据库为准，故需要一个真实的启用用户
+  const viewerId = createAuthorizedUser(db, []);
+  token = app.jwt.sign({ sub: viewerId, name: 'tester', roles: ['viewer'], permissions: [] });
 });
 
 afterEach(async () => {
@@ -116,7 +118,7 @@ describe('看板 · 鉴权', () => {
 });
 
 describe('IF-D1 kpi', () => {
-  it('on_hand_qty / on_hand_amount / item_count / in_transit_qty / alert_count 与造数一致', async () => {
+  it('on_hand_qty / stock_amount / item_count / in_transit_qty / alert_count 与造数一致', async () => {
     addStock(100);
     makeConfirmedPurchase(20);
     createAlertRule({ item_id: fx.itemId, warehouse_id: fx.warehouseId, min_qty: 150, max_qty: null });
@@ -124,7 +126,8 @@ describe('IF-D1 kpi', () => {
     const body = (await get()).json();
     expect(body.data.kpi).toEqual({
       on_hand_qty: 100,
-      on_hand_amount: 50000,
+      // 库存金额按流水累计（与「库存现状表 stock_amount」同口径）
+      stock_amount: 50000,
       item_count: 2,
       in_transit_qty: 20,
       alert_count: 1,
@@ -152,7 +155,7 @@ describe('IF-D1 trend', () => {
       const curr = Date.parse(`${trend[i].date}T00:00:00.000Z`);
       expect(curr - prev).toBe(86_400_000);
     }
-    expect(trend[29].date).toBe(new Date().toISOString().slice(0, 10));
+    expect(trend[29].date).toBe(businessToday());
 
     // 今日仅计入 adjust 入库 100，status_change 的成对出入被排除
     expect(trend[29]).toMatchObject({ in_qty: 100, out_qty: 0 });

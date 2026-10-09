@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { SALES_ORDER_STATUSES } from '../constants';
-import { dateSchema, optionalText, paginationQuerySchema } from './common';
+import { dateSchema, optionalText, orderItemLinesSchema, paginationQuerySchema } from './common';
 
 const optionalDate = z.preprocess(
   (value) => (value === '' || value === undefined ? undefined : value),
@@ -55,14 +55,7 @@ export const SALES_ORDER_STATUS_SET: ReadonlySet<string> = new Set(SALES_ORDER_S
 // ---------- 销售出库 ----------
 export const salesOutboundBodySchema = z.object({
   orderId: z.number().int().positive(),
-  lines: z
-    .array(
-      z.object({
-        orderItemId: z.number().int().positive(),
-        quantity: z.number().int().positive(),
-      }),
-    )
-    .min(1, '至少需要一行出库明细'),
+  lines: orderItemLinesSchema('至少需要一行出库明细'),
   occurredAt: z.string().optional(),
 });
 export type SalesOutboundBody = z.infer<typeof salesOutboundBodySchema>;
@@ -72,14 +65,7 @@ export const salesReturnBodySchema = z.object({
   orderId: z.number().int().positive(),
   returnDate: dateSchema,
   remark: optionalText(500),
-  lines: z
-    .array(
-      z.object({
-        orderItemId: z.number().int().positive(),
-        quantity: z.number().int().positive(),
-      }),
-    )
-    .min(1, '至少需要一行退货明细'),
+  lines: orderItemLinesSchema('至少需要一行退货明细'),
 });
 export type SalesReturnBody = z.infer<typeof salesReturnBodySchema>;
 

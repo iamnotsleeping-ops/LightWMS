@@ -140,11 +140,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS, PURCHASE_ORDER_STATUS_LABELS, type PurchaseOrderStatus } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 import { formatAmount, formatQty } from '@/utils/format';
 
 interface OrderHeader {
@@ -236,18 +237,14 @@ const goInbound = () =>
   void router.push({ name: 'purchase-inbound', query: { orderId: String(route.params.id) } });
 
 async function confirm(): Promise<void> {
-  await ElMessageBox.confirm('确认该采购单？确认后表体不可修改，其数量将计入采购在途。', '确认采购单', {
-    type: 'warning',
-  });
+  if (!(await confirmAction('确认该采购单？确认后表体不可修改，其数量将计入采购在途。', '确认采购单'))) return;
   await http.post(`/api/purchase/orders/${route.params.id}/confirm`);
   ElMessage.success('已确认');
   await load();
 }
 
 async function cancel(): Promise<void> {
-  await ElMessageBox.confirm('取消该采购单？取消后其数量将从采购在途统计中移除。', '取消采购单', {
-    type: 'warning',
-  });
+  if (!(await confirmAction('取消该采购单？取消后其数量将从采购在途统计中移除。', '取消采购单'))) return;
   await http.post(`/api/purchase/orders/${route.params.id}/cancel`);
   ElMessage.success('已取消');
   await load();

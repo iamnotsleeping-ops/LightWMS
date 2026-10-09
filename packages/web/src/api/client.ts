@@ -25,6 +25,29 @@ export function setToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * 会话失效回调。
+ *
+ * `setToken(null)` 只清 localStorage，而 Pinia store 自己持有一份 token/用户快照，
+ * 路由守卫读的是 store —— 只清 localStorage 会造成「僵尸会话」：界面仍是登录态、
+ * 菜单照常显示，但所有请求持续 401。
+ *
+ * 这里以回调注入的方式解耦：client 不 import store（避免 client ↔ store 循环依赖），
+ * 由 main.ts 在 Pinia 与 router 就绪后注册「清 store + 跳登录页」。
+ */
+type UnauthorizedHandler = () => void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+function handleUnauthorized(): void {
+  setToken(null);
+  unauthorizedHandler?.();
+}
+
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
@@ -60,7 +83,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   if (!response.ok || !payload || payload.code !== 0) {
     const message = payload?.message ?? `请求失败（HTTP ${response.status}）`;
-    if (response.status === 401) setToken(null);
+    if (response.status === 401) handleUnauthorized();
     if (!silent) ElMessage.error(message);
     throw new Error(message);
   }
@@ -98,8 +121,15 @@ export async function download(path: string, query?: Record<string, unknown>): P
 
   const response = await fetch(url, { headers });
   if (!response.ok) {
-    if (response.status === 401) setToken(null);
-    const message = `导出失败（HTTP ${response.status}）`;
+    if (response.status === 401) handleUnauthorized();
+    // 服务端同样返回统一信封，优先取其中的可读 message，而不是只报 HTTP 码
+    let message = `导出失败（HTTP ${response.status}）`;
+    try {
+      const payload = (await response.json()) as { message?: string };
+      if (payload?.message) message = payload.message;
+    } catch {
+      /* 非 JSON 响应（如网关错误页）保留兜底文案 */
+    }
     ElMessage.error(message);
     throw new Error(message);
   }

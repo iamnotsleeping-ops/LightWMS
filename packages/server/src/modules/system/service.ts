@@ -110,11 +110,50 @@ export function updateUser(id: number, body: UserUpdateBody): void {
   db.prepare(`UPDATE sys_user SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 }
 
-export function setUserRoles(userId: number, roleIds: number[]): void {
+/**
+ * 重置某用户的角色集合。
+ *
+ * 两道防越权 / 防自锁护栏（原实现无任何校验，持 `system.user.manage` 者可直接给自己
+ * 授予 `sys_admin`，或把最后一名管理员降级导致系统再无人可管理）：
+ *   1. 不允许修改**自己**的角色 —— 提权与自锁都必须经他人之手；
+ *   2. 不允许移除**最后一名**系统管理员。
+ */
+export function setUserRoles(
+  userId: number,
+  roleIds: number[],
+  actorUserId: number | null = null,
+): void {
   const db = getDb();
   const run = db.transaction(() => {
     const exists = db.prepare('SELECT id FROM sys_user WHERE id = ?').get(userId);
     if (!exists) throw new ApiError(404, '用户不存在');
+
+    if (actorUserId !== null && actorUserId === userId) {
+      throw new ApiError(409, '不能修改自己的角色，请由其他管理员操作');
+    }
+
+    const roleCheck = db.prepare('SELECT id FROM sys_role WHERE id = ?');
+    for (const roleId of roleIds) {
+      if (!roleCheck.get(roleId)) throw new ApiError(400, `角色不存在（id=${roleId}）`);
+    }
+
+    const adminRole = db
+      .prepare("SELECT id FROM sys_role WHERE code = 'sys_admin'")
+      .get() as { id: number } | undefined;
+    if (adminRole) {
+      const holdsAdmin = db
+        .prepare('SELECT 1 AS ok FROM sys_user_role WHERE user_id = ? AND role_id = ?')
+        .get(userId, adminRole.id);
+      if (holdsAdmin && !roleIds.includes(adminRole.id)) {
+        const others = db
+          .prepare('SELECT COUNT(*) AS c FROM sys_user_role WHERE role_id = ? AND user_id <> ?')
+          .get(adminRole.id, userId) as { c: number };
+        if (others.c === 0) {
+          throw new ApiError(409, '系统必须保留至少一名系统管理员，不能移除最后一名');
+        }
+      }
+    }
+
     db.prepare('DELETE FROM sys_user_role WHERE user_id = ?').run(userId);
     const insert = db.prepare('INSERT INTO sys_user_role (user_id, role_id) VALUES (?, ?)');
     for (const roleId of roleIds) insert.run(userId, roleId);
@@ -199,11 +238,24 @@ export function deleteRole(id: number): void {
   db.prepare('DELETE FROM sys_role WHERE id = ?').run(id);
 }
 
+/**
+ * 重置某角色的权限集合。
+ *
+ * `sys_admin` 的权限集**不可修改**：它被定义为「拥有全部权限」，允许改写会让持
+ * `system.role.manage` 者把全部权限授予任意低权角色（提权），或清空内置管理员权限
+ * 导致系统再无人可管理（自锁）。与 `deleteRole` 拒绝删除 `sys_admin` 保持一致。
+ * 后续若新增权限码，应由迁移显式补授给 `sys_admin`，而不是走本接口。
+ */
 export function setRolePermissions(roleId: number, permissionIds: number[]): void {
   const db = getDb();
   const run = db.transaction(() => {
-    const exists = db.prepare('SELECT id FROM sys_role WHERE id = ?').get(roleId);
-    if (!exists) throw new ApiError(404, '角色不存在');
+    const role = db.prepare('SELECT id, code FROM sys_role WHERE id = ?').get(roleId) as
+      | { id: number; code: string }
+      | undefined;
+    if (!role) throw new ApiError(404, '角色不存在');
+    if (role.code === 'sys_admin') {
+      throw new ApiError(409, '内置系统管理员的权限不可修改（默认拥有全部权限）');
+    }
     db.prepare('DELETE FROM sys_role_permission WHERE role_id = ?').run(roleId);
     const insert = db.prepare(
       'INSERT INTO sys_role_permission (role_id, permission_id) VALUES (?, ?)',

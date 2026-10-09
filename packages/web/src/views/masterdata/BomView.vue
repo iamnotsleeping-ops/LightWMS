@@ -129,11 +129,12 @@
 
 <script setup lang="ts">
 import { PERMISSIONS } from '@light-erp/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { http } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { confirmAction } from '@/utils/confirm';
 
 interface BomRow {
   id: number;
@@ -284,11 +285,7 @@ async function save(): Promise<void> {
 }
 
 async function remove(row: BomRow): Promise<void> {
-  await ElMessageBox.confirm(
-    `确认删除「${row.parent_code} → ${row.child_code}」这条 BOM 版本？`,
-    '删除确认',
-    { type: 'warning' },
-  );
+  if (!(await confirmAction(`确认删除「${row.parent_code} → ${row.child_code}」这条 BOM 版本？`, '删除确认'))) return;
   try {
     await http.del(`/api/masterdata/boms/${row.id}`);
     await load();

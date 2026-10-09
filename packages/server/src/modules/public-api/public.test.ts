@@ -6,7 +6,11 @@ import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
 import { postMovement } from '../inventory/stock.engine';
 import { confirmOrder as confirmPurchase, createOrder as createPurchase } from '../purchase/purchase.service';
 import { receivePurchase } from '../purchase/purchase.inbound';
-import { confirmOrder as confirmSales, createOrder as createSales } from '../sales/sales.service';
+import {
+  cancelOrder as cancelSales,
+  confirmOrder as confirmSales,
+  createOrder as createSales,
+} from '../sales/sales.service';
 
 let db: Db;
 let fx: Fixtures;
@@ -370,6 +374,45 @@ describe('IF-6 销售订单行', () => {
     expect(
       (await get('/api/v1/sales-orders?date_from=2026-02-01&date_to=2026-02-28')).json().page.total,
     ).toBe(0);
+  });
+
+  // 回归：缺省曾返回全部状态，导致 draft / cancelled 订单的整行数量被计入「未出库量」，
+  // 下游按 unshipped 求和的待出库需求被系统性高估（与内部 reserved 口径不一致）。
+  it('缺省只返回未结需求（confirmed / partial），draft 与 cancelled 不计入，并给出告警', async () => {
+    const salesBody = (quantity: number) => ({
+      customer_id: fx.customerId,
+      order_date: '2026-01-01',
+      items: [
+        {
+          product_id: fx.itemId,
+          warehouse_id: fx.warehouseId,
+          quantity,
+          unit_price: 800,
+          due_date: '2026-01-20',
+        },
+      ],
+    });
+
+    const confirmedId = createSales(salesBody(25), null).id;
+    confirmSales(confirmedId);
+    createSales(salesBody(40), null); // 保持 draft
+    const cancelledId = createSales(salesBody(60), null).id;
+    confirmSales(cancelledId);
+    cancelSales(cancelledId);
+
+    const defaultBody = (await get('/api/v1/sales-orders')).json();
+    expect(defaultBody.page.total).toBe(1);
+    expect(defaultBody.data[0]).toMatchObject({ quantity: 25, unshipped: 25, status: 'confirmed' });
+    // 未出库量合计只反映未结需求 25，而不是 25 + 40 + 60
+    expect(
+      defaultBody.data.reduce((sum: number, row: { unshipped: number }) => sum + row.unshipped, 0),
+    ).toBe(25);
+    expect(defaultBody._warnings.join('\n')).toContain('缺省仅返回未结需求');
+
+    // 需要历史全量时显式传 status（含逗号分隔多值）
+    const explicit = (await get('/api/v1/sales-orders?status=draft,confirmed,cancelled')).json();
+    expect(explicit.page.total).toBe(3);
+    expect(explicit._warnings).toEqual([]);
   });
 });
 

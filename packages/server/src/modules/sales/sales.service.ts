@@ -356,8 +356,14 @@ export function cancelOrder(id: number): { id: number; status: SalesOrderStatus 
   return db.transaction(() => {
     const existing = orderRow(db, id);
     requireStatus(existing.status, ['draft', 'confirmed'], '仅草稿或已确认的销售单可取消');
+    const now = new Date().toISOString();
+    // 行级回填取消量：未执行部分（quantity − shipped_qty）记为已取消。
+    // 见 purchase.service.ts cancelOrder 的同名说明：该字段此前无写入路径、恒为 0。
+    db.prepare(
+      'UPDATE sales_order_item SET cancelled_qty = quantity - shipped_qty, updated_at = ? WHERE order_id = ?',
+    ).run(now, id);
     db.prepare("UPDATE sales_order SET status = 'cancelled', updated_at = ? WHERE id = ?").run(
-      new Date().toISOString(),
+      now,
       id,
     );
     return { id, status: 'cancelled' as const };

@@ -14,6 +14,7 @@ import {
 import { getDb } from '../../db/connection';
 import { RECEIPT_CTE, daysBetween, mean, round } from '../../lib/leadtime';
 import { ApiError, type PageInfo } from '../../lib/response';
+import { businessDateOf } from '../../lib/time';
 import { explodeBom, listBoms } from '../masterdata/bom.service';
 import { queryStockList } from '../inventory/stock.query';
 
@@ -26,6 +27,15 @@ export interface PublicPaged {
 }
 
 const IN_TRANSIT_DEFAULT_STATUSES = ['confirmed', 'partial'];
+
+/**
+ * IF-6 缺省状态范围：「未结需求」。
+ *
+ * 与内部 `reserved` 口径（stock.query.ts：只统计 confirmed / partial）保持一致。
+ * 若缺省返回全部状态，`draft` 与 `cancelled` 订单行的 `unshipped` 仍等于订单量，
+ * 下游按 `unshipped` 求和会把未生效与已取消的需求一并算作待出库，系统性高估。
+ */
+const OPEN_SALES_STATUSES = ['confirmed', 'partial'];
 
 // ---------- 通用工具 ----------
 
@@ -321,7 +331,7 @@ export function listPublicPurchaseHistory(query: PublicPurchaseHistoryQuery): Pu
   })[];
 
   const list: Row[] = rows.map((row) => {
-    const lastDay = row.last_received_at.slice(0, 10);
+    const lastDay = businessDateOf(row.last_received_at);
     return {
       order_no: row.order_no,
       order_date: row.order_date,
@@ -424,10 +434,12 @@ export function supplierLeadTimeStats(code: string, query: PublicLeadTimeStatsQu
     receivedLineCount = lineStats.received_line_count;
   }
 
-  const leadTimes = orders.map((row) => daysBetween(row.order_date, row.last_received_at.slice(0, 10)));
+  const leadTimes = orders.map((row) =>
+    daysBetween(row.order_date, businessDateOf(row.last_received_at)),
+  );
   const promisedLeadTimes = orders.map((row) => daysBetween(row.order_date, row.max_promised_date));
   const onTimeCount = orders.filter(
-    (row) => row.last_received_at.slice(0, 10) <= row.max_promised_date,
+    (row) => businessDateOf(row.last_received_at) <= row.max_promised_date,
   ).length;
   const lastOrderDate = orders.reduce<string | null>(
     (latest, row) => (latest === null || row.order_date > latest ? row.order_date : latest),
@@ -492,6 +504,10 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
     if (statuses.length === 0) return emptyPage(query);
     where.push(`so.status IN (${statuses.map(() => '?').join(', ')})`);
     params.push(...statuses);
+  } else {
+    // 缺省只返回未结需求，避免把 draft / cancelled 计入待出库（见 OPEN_SALES_STATUSES 注释）
+    where.push(`so.status IN (${OPEN_SALES_STATUSES.map(() => '?').join(', ')})`);
+    params.push(...OPEN_SALES_STATUSES);
   }
   if (query.date_from) {
     where.push('soi.due_date >= ?');
@@ -528,7 +544,12 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
     )
     .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];
 
-  return { list: rows, page: pageOf(query, total), warnings: [] };
+  const warnings = query.status
+    ? []
+    : [
+        `未指定 status，缺省仅返回未结需求（${OPEN_SALES_STATUSES.join(' / ')}），与内部 reserved 口径一致；如需包含 draft / cancelled，请显式传 status（支持逗号分隔多值）`,
+      ];
+  return { list: rows, page: pageOf(query, total), warnings };
 }
 
 // ---------- IF-7 工厂 / 仓库 ----------
