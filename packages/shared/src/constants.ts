@@ -96,6 +96,54 @@ export const STOCKTAKE_ORDER_STATUS_LABELS: Record<StocktakeOrderStatus, string>
 export const ALERT_TYPES = ['below_min', 'above_max'] as const;
 export type AlertType = (typeof ALERT_TYPES)[number];
 
+/* ---------- 替代料（P10） ---------- */
+
+/** 替代关系生效场景。本项目无生产工单/MRP，故只有这三个场景 */
+export const SUBSTITUTE_SCENES = ['sales_out', 'bom_plan', 'purchase_hint'] as const;
+export type SubstituteScene = (typeof SUBSTITUTE_SCENES)[number];
+
+export const SUBSTITUTE_SCENE_LABELS: Record<SubstituteScene, string> = {
+  sales_out: '销售出库',
+  bom_plan: 'BOM 备料',
+  purchase_hint: '采购建议',
+};
+
+/** 替代策略：按比例混用 / 整批全量 / 手工指定 */
+export const SUBSTITUTE_STRATEGIES = ['proportion', 'whole_batch', 'manual'] as const;
+export type SubstituteStrategy = (typeof SUBSTITUTE_STRATEGIES)[number];
+
+export const SUBSTITUTE_STRATEGY_LABELS: Record<SubstituteStrategy, string> = {
+  proportion: '按比例混用',
+  whole_batch: '整批全量',
+  manual: '手工指定',
+};
+
+/** 某个替代料被跳过的原因（必须回传给前端，不允许静默丢弃） */
+export const SUBSTITUTE_SKIP_REASONS = [
+  'no_stock',
+  'customer_not_certified',
+  'customer_cert_expired',
+  'relation_inactive',
+  'out_of_validity',
+  'wrong_warehouse',
+  'wrong_parent',
+  'manual_excluded',
+  'same_as_main',
+] as const;
+export type SubstitutionSkipReason = (typeof SUBSTITUTE_SKIP_REASONS)[number];
+
+export const SUBSTITUTE_SKIP_REASON_LABELS: Record<SubstitutionSkipReason, string> = {
+  no_stock: '无可用库存',
+  customer_not_certified: '该客户未认证此替代料',
+  customer_cert_expired: '该客户的替代料认证已过期',
+  relation_inactive: '替代关系已停用',
+  out_of_validity: '不在替代关系生效期内',
+  wrong_warehouse: '替代关系不适用于该仓库',
+  wrong_parent: '替代关系仅适用于其它父件',
+  manual_excluded: '未在手工指定范围内',
+  same_as_main: '与主料相同',
+};
+
 export const ALERT_TYPE_LABELS: Record<AlertType, string> = {
   below_min: '低于下限',
   above_max: '高于上限',
@@ -151,6 +199,10 @@ export const PERMISSIONS = {
   masterdataPartnerManage: 'masterdata.partner.manage',
   masterdataWarehouseView: 'masterdata.warehouse.view',
   masterdataWarehouseManage: 'masterdata.warehouse.manage',
+  // 替代料（P10）。view 与 manage 分离；sales.outbound.substitute 单列，
+  // 使「查看替代建议」与「实际用替代料出库」可以按角色分别授予/收回。
+  masterdataSubstituteView: 'masterdata.substitute.view',
+  masterdataSubstituteManage: 'masterdata.substitute.manage',
   // 采购
   purchaseOrderView: 'purchase.order.view',
   purchaseOrderManage: 'purchase.order.manage',
@@ -161,6 +213,8 @@ export const PERMISSIONS = {
   salesOrderManage: 'sales.order.manage',
   salesOrderConfirm: 'sales.order.confirm',
   salesOutboundManage: 'sales.outbound.manage',
+  /** 实际使用替代料替代主料出库（仅"看建议"不需要它） */
+  salesOutboundSubstitute: 'sales.outbound.substitute',
   // 库存
   inventoryQueryView: 'inventory.query.view',
   inventoryTransactionView: 'inventory.transaction.view',

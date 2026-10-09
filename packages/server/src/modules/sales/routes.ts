@@ -7,8 +7,10 @@ import {
   salesOutboundBodySchema,
   salesReturnBodySchema,
   salesReturnQuerySchema,
+  usesSubstitution,
 } from '@light-erp/shared';
 import type { FastifyInstance } from 'fastify';
+import { loadAuthState } from '../../plugins/auth';
 import { ok, okPage } from '../../lib/response';
 import { createSalesReturn, shipSales } from './sales.outbound';
 import {
@@ -65,8 +67,21 @@ export function registerSalesRoutes(app: FastifyInstance): void {
     return ok(cancelOrder(id));
   });
 
-  app.post('/api/sales/outbound', outbound, async (request) => {
+  app.post('/api/sales/outbound', outbound, async (request, reply) => {
     const body = salesOutboundBodySchema.parse(request.body);
+
+    // P10：用替代料出库需要单独的 sales.outbound.substitute 权限，使运维可以按角色
+    // 单独收回「替代出库」能力而不影响正常出库（只读的替代建议不受此限制）。
+    // 授权以数据库为准（与 requirePermission 同源），不能信任 JWT 里的权限快照。
+    if (usesSubstitution(body.lines)) {
+      const state = loadAuthState(request.user.sub, PERMISSIONS.salesOutboundSubstitute);
+      if (!state || !state.active || !state.allowed) {
+        return reply
+          .status(403)
+          .send({ code: 403, message: '无替代料出库权限', data: null, _warnings: [] });
+      }
+    }
+
     return ok(shipSales(body, request.user.sub));
   });
 

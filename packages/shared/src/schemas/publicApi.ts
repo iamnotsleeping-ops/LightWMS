@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { WAREHOUSE_TYPES } from '../constants';
+import { SUBSTITUTE_SCENES, SUBSTITUTE_STRATEGIES, WAREHOUSE_TYPES } from '../constants';
 import { dateSchema, optionalText } from './common';
 import { asOfSchema } from './inventory';
 
@@ -139,3 +139,38 @@ export const publicWarehousesQuerySchema = z.object({
   format: publicFormatSchema,
 });
 export type PublicWarehousesQuery = z.infer<typeof publicWarehousesQuerySchema>;
+
+// ---------- IF-8 替代关系（关系清单，非规划结果） ----------
+/**
+ * 只回答「这个主料配了哪些替代关系」，不做任何可用量计算、不产出分配建议（规划见 IF-9）。
+ * `warehouse_code` 给定时同时纳入「全仓通用」（warehouse_id IS NULL）与该仓专属的关系；
+ * `as_of` 只筛选关系的生效期（NULL 边界视为长期有效）。
+ */
+export const publicSubstitutesQuerySchema = publicPaginationSchema.extend({
+  main_item_code: z.string().trim().min(1).max(50),
+  warehouse_code: optionalText(50),
+  scene: z.preprocess(emptyToUndefined, z.enum(SUBSTITUTE_SCENES).optional()),
+  as_of: asOfSchema,
+  format: publicFormatSchema,
+});
+export type PublicSubstitutesQuery = z.infer<typeof publicSubstitutesQuerySchema>;
+
+// ---------- IF-9 替代规划（只读试算，整份返回） ----------
+/**
+ * 规划结果整体返回（不分页）：`page` / `page_size` 仅为与其它接口保持入参一致而接收，不影响结果。
+ * `strategy` 缺省取首个候选关系上的策略；`manual_item_codes` 仅 `strategy=manual` 时生效。
+ */
+export const publicSubstitutionPlanQuerySchema = publicPaginationSchema.extend({
+  main_item_code: z.string().trim().min(1).max(50),
+  warehouse_code: z.string().trim().min(1).max(50),
+  required_qty: z.coerce.number().int().positive(),
+  scene: z.preprocess(emptyToUndefined, z.enum(SUBSTITUTE_SCENES).default('sales_out')),
+  customer_code: optionalText(50),
+  parent_item_code: optionalText(50),
+  strategy: z.preprocess(emptyToUndefined, z.enum(SUBSTITUTE_STRATEGIES).optional()),
+  /** 逗号分隔的替代料编码，仅 strategy=manual 时使用（顺序即手工分配顺序） */
+  manual_item_codes: optionalText(500),
+  as_of: asOfSchema,
+  format: publicFormatSchema,
+});
+export type PublicSubstitutionPlanQuery = z.infer<typeof publicSubstitutionPlanQuerySchema>;

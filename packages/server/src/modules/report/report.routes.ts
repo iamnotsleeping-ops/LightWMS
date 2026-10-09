@@ -3,6 +3,7 @@ import {
   ledgerQuerySchema,
   PERMISSIONS,
   stockSnapshotQuerySchema,
+  substituteUsageQuerySchema,
   supplierLeadTimeQuerySchema,
 } from '@light-erp/shared';
 import type { FastifyInstance } from 'fastify';
@@ -12,6 +13,7 @@ import {
   queryInventoryLedger,
   queryItemMovement,
   queryStockSnapshot,
+  querySubstituteUsage,
   querySupplierLeadTime,
 } from './report.service';
 
@@ -50,6 +52,13 @@ export function registerReportRoutes(app: FastifyInstance): void {
     const query = supplierLeadTimeQuerySchema.parse(request.query);
     const { list, page, warnings } = querySupplierLeadTime(query, { all: query.format === 'csv' });
     if (query.format === 'csv') return sendCsv(reply, list, 'supplier-lead-time', warnings);
+    return okPage(list, page, warnings);
+  });
+
+  app.get('/api/reports/substitute-usage', view, async (request, reply) => {
+    const query = substituteUsageQuerySchema.parse(request.query);
+    const { list, page, warnings } = querySubstituteUsage(query, { all: query.format === 'csv' });
+    if (query.format === 'csv') return sendCsv(reply, list, 'substitute-usage', warnings);
     return okPage(list, page, warnings);
   });
 }

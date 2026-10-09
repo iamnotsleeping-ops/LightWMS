@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
+import { addBusinessDays, businessDayEnd, businessDayStart, businessToday } from '../../lib/time';
 import { createAuthorizedUser, createTestDb, seedFixtures, type Fixtures } from '../../test/db';
 import { changeStockStatus, postMovement } from '../inventory/stock.engine';
 import { receivePurchase } from '../purchase/purchase.inbound';
@@ -9,6 +10,7 @@ import {
   confirmOrder as confirmPurchase,
   createOrder as createPurchase,
 } from '../purchase/purchase.service';
+import { SUBSTITUTE_IDLE_DAYS } from './report.service';
 
 let db: Db;
 let fx: Fixtures;
@@ -121,6 +123,7 @@ describe('报表接口 · 鉴权', () => {
       '/api/reports/stock-snapshot',
       '/api/reports/item-movement',
       '/api/reports/supplier-lead-time',
+      '/api/reports/substitute-usage',
     ];
     for (const url of urls) {
       const anonymous = await get(url, null);
@@ -365,6 +368,238 @@ describe('IF-R4 供应商提前期分析', () => {
   });
 });
 
+describe('IF-R5 替代料使用 / 呆滞', () => {
+  type UsageRow = {
+    item_code: string;
+    item_name: string;
+    base_unit: string;
+    substitution_count: number;
+    total_sub_qty: number;
+    last_used_at: string | null;
+    idle_days: number | null;
+    is_idle: number;
+  };
+  type UsageBody = { page: { total: number }; data: UsageRow[]; _warnings: string[] };
+
+  const usage = async (query: string): Promise<UsageBody> =>
+    (await get(`/api/reports/substitute-usage${query}`)).json() as UsageBody;
+
+  /** 配一条「主料 → 替代料」关系（场景等列走库默认值，报表不按场景拆分） */
+  function relateSubstitute(subItemId: number): void {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO item_substitute (main_item_id, sub_item_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(fx.itemId, subItemId, now, now);
+  }
+
+  /** 落一条替代执行日志（append-only 表，直接写 SQL 造数） */
+  function logSubstitution(subItemId: number, subActualQty: number, createdAt: string): void {
+    db.prepare(
+      `INSERT INTO item_substitute_log
+         (biz_type, warehouse_id, main_item_id, main_need_qty, main_actual_qty,
+          sub_item_id, sub_actual_qty, created_at)
+       VALUES ('sales_out', ?, ?, ?, 0, ?, ?, ?)`,
+    ).run(fx.warehouseId, fx.itemId, subActualQty, subItemId, subActualQty, createdAt);
+  }
+
+  /** 建替代料并配好替代关系，返回其 id */
+  function makeSubstitute(code: string): number {
+    const id = makeItem(code);
+    relateSubstitute(id);
+    return id;
+  }
+
+  it('同一替代料多条日志：次数、数量求和正确，last_used_at 取最大', async () => {
+    const today = businessToday();
+    const sub = makeSubstitute('SUB-AGG');
+    const day20 = addBusinessDays(today, -20);
+    const day5 = addBusinessDays(today, -5);
+    logSubstitution(sub, 3, businessDayStart(day20));
+    logSubstitution(sub, 7, businessDayEnd(day5));
+
+    const body = await usage('');
+    expect(body.page.total).toBe(1);
+    expect(body.data[0]).toMatchObject({
+      item_code: 'SUB-AGG',
+      item_name: '物料SUB-AGG',
+      base_unit: 'EA',
+      substitution_count: 2,
+      total_sub_qty: 10,
+      last_used_at: businessDayEnd(day5),
+      idle_days: 5,
+      is_idle: 0,
+    });
+  });
+
+  // 数据源 = item_substitute ∪ item_substitute_log：配了关系但从未真正用过，
+  // 恰恰是最该出现在呆滞报表里的行，若只扫日志就会整行消失。
+  it('配了关系但从未使用：count=0 / last_used_at=null / is_idle=1，且仍成行；无关物料不入表', async () => {
+    makeItem('SUB-ORPHAN'); // 既无替代关系也无日志的普通物料
+    makeSubstitute('SUB-CONFIGURED');
+
+    const body = await usage('');
+    expect(body.page.total).toBe(1);
+    expect(body.data[0]).toMatchObject({
+      item_code: 'SUB-CONFIGURED',
+      substitution_count: 0,
+      total_sub_qty: 0,
+      last_used_at: null,
+      idle_days: null,
+      is_idle: 1,
+    });
+  });
+
+  // 用 businessToday()/addBusinessDays 推算日期，用例不随时间腐化；
+  // 阈值取自导出的 SUBSTITUTE_IDLE_DAYS，改阈值时用例同步跟着走。
+  it('呆滞判定按业务日：90 天前用过 → 呆滞；89 / 10 天前用过 → 不呆滞；排序呆滞在前', async () => {
+    const today = businessToday();
+    const idleId = makeSubstitute('SUB-IDLE');
+    const edgeId = makeSubstitute('SUB-EDGE');
+    const freshId = makeSubstitute('SUB-FRESH');
+    logSubstitution(idleId, 1, businessDayStart(addBusinessDays(today, -SUBSTITUTE_IDLE_DAYS)));
+    logSubstitution(edgeId, 1, businessDayStart(addBusinessDays(today, -(SUBSTITUTE_IDLE_DAYS - 1))));
+    logSubstitution(freshId, 1, businessDayStart(addBusinessDays(today, -10)));
+
+    const body = await usage('');
+    expect(body.data.find((row) => row.item_code === 'SUB-IDLE')).toMatchObject({
+      idle_days: SUBSTITUTE_IDLE_DAYS,
+      is_idle: 1,
+    });
+    expect(body.data.find((row) => row.item_code === 'SUB-EDGE')).toMatchObject({
+      idle_days: SUBSTITUTE_IDLE_DAYS - 1,
+      is_idle: 0,
+    });
+    expect(body.data.find((row) => row.item_code === 'SUB-FRESH')).toMatchObject({
+      idle_days: 10,
+      is_idle: 0,
+    });
+    // is_idle DESC → last_used_at ASC → item_code ASC
+    expect(body.data.map((row) => row.item_code)).toEqual(['SUB-IDLE', 'SUB-EDGE', 'SUB-FRESH']);
+  });
+
+  it('onlyIdle 只保留呆滞行，且从未使用的行排在最前', async () => {
+    const today = businessToday();
+    const idleId = makeSubstitute('SUB-IDLE');
+    const freshId = makeSubstitute('SUB-FRESH');
+    makeSubstitute('SUB-NEVER');
+    logSubstitution(idleId, 2, businessDayStart(addBusinessDays(today, -(SUBSTITUTE_IDLE_DAYS + 1))));
+    logSubstitution(freshId, 2, businessDayStart(addBusinessDays(today, -1)));
+
+    expect((await usage('')).page.total).toBe(3);
+    expect((await usage('?onlyIdle=false')).page.total).toBe(3);
+
+    for (const param of ['?onlyIdle=true', '?onlyIdle=1']) {
+      const body = await usage(param);
+      expect(body.page.total, param).toBe(2);
+      expect(body.data.map((row) => row.item_code), param).toEqual(['SUB-NEVER', 'SUB-IDLE']);
+      expect(body.data.every((row) => row.is_idle === 1), param).toBe(true);
+    }
+  });
+
+  it('keyword 命中替代料编码或名称', async () => {
+    makeSubstitute('SUB-AAA');
+    makeSubstitute('SUB-BBB');
+
+    const byCode = await usage('?keyword=AAA');
+    expect(byCode.page.total).toBe(1);
+    expect(byCode.data[0].item_code).toBe('SUB-AAA');
+
+    // 名称由 makeItem 生成为「物料<编码>」
+    const byName = await usage(`?keyword=${encodeURIComponent('物料SUB-BBB')}`);
+    expect(byName.page.total).toBe(1);
+    expect(byName.data[0].item_code).toBe('SUB-BBB');
+
+    expect((await usage('?keyword=NOPE')).page.total).toBe(0);
+  });
+
+  it('dateFrom / dateTo 按业务日边界过滤日志，并给出区间告警', async () => {
+    const today = businessToday();
+    const sub = makeSubstitute('SUB-RANGE');
+    const day30 = addBusinessDays(today, -30);
+    const day10 = addBusinessDays(today, -10);
+    logSubstitution(sub, 4, businessDayEnd(day30));
+    logSubstitution(sub, 6, businessDayEnd(day10));
+
+    // 区间内只剩 day10 那笔
+    const within = await usage(`?dateFrom=${addBusinessDays(today, -20)}&dateTo=${today}`);
+    expect(within.page.total).toBe(1);
+    expect(within.data[0]).toMatchObject({
+      substitution_count: 1,
+      total_sub_qty: 6,
+      last_used_at: businessDayEnd(day10),
+      idle_days: 10,
+      is_idle: 0,
+    });
+    expect(within._warnings.some((w) => w.includes('统计区间'))).toBe(true);
+
+    // 区间完全不覆盖日志：关系仍在，故该行仍出现，区间内计数为 0；
+    // 但 last_used_at / 呆滞判定**始终按全部历史**——否则任何区间过滤都会把
+    // 区间外用过的替代料显示成"从未使用"，90 天口径就失真了。
+    const outside = await usage(`?dateFrom=${today}&dateTo=${today}`);
+    expect(outside.page.total).toBe(1);
+    expect(outside.data[0]).toMatchObject({
+      substitution_count: 0,
+      total_sub_qty: 0,
+      last_used_at: businessDayEnd(day10),
+      idle_days: 10,
+      is_idle: 0,
+    });
+
+    // 边界：当日 00:00:00.000（本地）计入当日；前一日 23:59:59.999 不计入
+    const startToday = businessDayStart(today);
+    logSubstitution(sub, 1, startToday);
+    expect((await usage(`?dateFrom=${today}&dateTo=${today}`)).data[0]).toMatchObject({
+      substitution_count: 1,
+      last_used_at: startToday,
+    });
+    logSubstitution(sub, 1, new Date(new Date(startToday).getTime() - 1).toISOString());
+    expect((await usage(`?dateFrom=${today}&dateTo=${today}`)).data[0]).toMatchObject({
+      substitution_count: 1,
+    });
+
+    // 不传区间：全部日志计入、呆滞按全量最后一次使用判定，且无区间告警
+    const all = await usage('');
+    expect(all.data[0]).toMatchObject({
+      substitution_count: 4,
+      total_sub_qty: 12,
+      last_used_at: startToday,
+      idle_days: 0,
+      is_idle: 0,
+    });
+    expect(all._warnings.some((w) => w.includes('统计区间'))).toBe(false);
+    expect(all._warnings.some((w) => w.includes(String(SUBSTITUTE_IDLE_DAYS)))).toBe(true);
+  });
+
+  it('format=csv：text/csv + BOM + 业务列序，且 pageSize 小于行数时仍导出全部行', async () => {
+    const today = businessToday();
+    const codes = ['SUB-CSV-001', 'SUB-CSV-002', 'SUB-CSV-003'];
+    codes.forEach((code, index) => {
+      logSubstitution(makeSubstitute(code), index + 1, businessDayStart(addBusinessDays(today, -(index + 1))));
+    });
+
+    // 浏览仍分页：pageSize=1 只回 1 行，total 是全量
+    const browsing = await usage('?pageSize=1');
+    expect(browsing.page.total).toBe(3);
+    expect(browsing.data).toHaveLength(1);
+
+    // 导出走 { all: true }：不受 pageSize 限制
+    const res = await get('/api/reports/substitute-usage?format=csv&pageSize=1');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.headers['x-warnings']).toBe('1');
+    expect(res.body.charAt(0)).toBe('\uFEFF');
+
+    const lines = res.body.replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+    expect(lines).toHaveLength(codes.length + 1);
+    expect(lines[0]).toBe(
+      'item_code,item_name,base_unit,substitution_count,total_sub_qty,last_used_at,idle_days,is_idle',
+    );
+    for (const code of codes) expect(res.body).toContain(code);
+    expect(res.body).not.toContain('"_warnings"');
+  });
+});
+
 describe('format=csv', () => {
   it('4 张报表返回 text/csv、带 BOM、业务列序、不套信封', async () => {
     addStock(25, 1, '2026-06-01T00:00:00.000Z', { unitCost: 400 });
@@ -425,24 +660,43 @@ describe('format=csv', () => {
 });
 
 describe('只读性', () => {
-  it('调用 4 张报表前后不产生任何写入', async () => {
+  it('调用 5 张报表前后不产生任何写入', async () => {
     addStock(10, 1, '2026-06-01T00:00:00.000Z', { unitCost: 500 });
-    const before = {
-      transactions: (db.prepare('SELECT COUNT(*) AS n FROM stock_transaction').get() as { n: number }).n,
-      balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
-      orders: (db.prepare('SELECT COUNT(*) AS n FROM purchase_order').get() as { n: number }).n,
-    };
+    // 让替代料报表真的走一遍 join（表非空时「前后不变」才有意义）
+    const now = new Date().toISOString();
+    const subItemId = makeItem('SUB-RO');
+    db.prepare(
+      `INSERT INTO item_substitute (main_item_id, sub_item_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(fx.itemId, subItemId, now, now);
+    db.prepare(
+      `INSERT INTO item_substitute_log
+         (biz_type, warehouse_id, main_item_id, main_need_qty, main_actual_qty,
+          sub_item_id, sub_actual_qty, created_at)
+       VALUES ('sales_out', ?, ?, 5, 0, ?, 5, ?)`,
+    ).run(fx.warehouseId, fx.itemId, subItemId, now);
+    const count = (table: string): number =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    const snapshot = () => ({
+      transactions: count('stock_transaction'),
+      balance: count('stock_balance'),
+      orders: count('purchase_order'),
+      substituteLog: count('item_substitute_log'),
+      substitutes: count('item_substitute'),
+    });
+    const before = snapshot();
+    // 造数生效（否则「前后不变」会退化成对空表断言）
+    expect(before.substituteLog).toBe(1);
+    expect(before.substitutes).toBe(1);
 
     await get('/api/reports/inventory-ledger');
     await get('/api/reports/stock-snapshot');
     await get('/api/reports/item-movement');
     await get('/api/reports/supplier-lead-time');
+    await get('/api/reports/substitute-usage');
+    // CSV 分支同样只读（导出会走 { all: true } 全量查询）
+    await get('/api/reports/substitute-usage?format=csv');
 
-    const after = {
-      transactions: (db.prepare('SELECT COUNT(*) AS n FROM stock_transaction').get() as { n: number }).n,
-      balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
-      orders: (db.prepare('SELECT COUNT(*) AS n FROM purchase_order').get() as { n: number }).n,
-    };
-    expect(after).toEqual(before);
+    expect(snapshot()).toEqual(before);
   });
 });

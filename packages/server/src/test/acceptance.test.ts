@@ -136,7 +136,11 @@ describe('P9 验收 · 全链路', () => {
     expect(countTable('warehouse')).toBe(4);
     expect(countTable('partner')).toBe(5);
     expect(countTable('bom')).toBe(10);
-    expect(countTable('item_customer_certification')).toBe(1);
+    // FG-1001（原有）+ FG-1002（P10 替代料演示所需的客户认证）
+    expect(countTable('item_customer_certification')).toBe(2);
+    // P10 替代料：1 条演示关系（FG-1002 替代 FG-1001，销售出库场景）；尚无替代执行记录
+    expect(countTable('item_substitute')).toBe(1);
+    expect(countTable('item_substitute_log')).toBe(0);
 
     // 2026-03-15 落在 FG-1001 生效窗口（2026-01-01 ~ 2026-06-30），RM-3004 用量为 1
     const v1 = (await authGet('/api/masterdata/boms?asOf=2026-03-15&parentItemId=' + itemIdOf('FG-1001'))).json();

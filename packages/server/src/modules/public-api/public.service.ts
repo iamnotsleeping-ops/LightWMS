@@ -9,14 +9,20 @@ import {
   type PublicLeadTimeStatsQuery,
   type PublicPurchaseHistoryQuery,
   type PublicSalesOrdersQuery,
+  type PublicSubstitutesQuery,
+  type PublicSubstitutionPlanQuery,
   type PublicWarehousesQuery,
+  type SubstituteScene,
+  type SubstituteStrategy,
+  type SubstitutionSkipReason,
 } from '@light-erp/shared';
 import { getDb } from '../../db/connection';
 import { RECEIPT_CTE, daysBetween, mean, round } from '../../lib/leadtime';
 import { ApiError, type PageInfo } from '../../lib/response';
-import { businessDateOf } from '../../lib/time';
+import { businessDateOf, businessToday } from '../../lib/time';
 import { explodeBom, listBoms } from '../masterdata/bom.service';
 import { queryStockList } from '../inventory/stock.query';
+import { planSubstitution } from '../substitute/substitute.plan';
 
 type Row = Record<string, unknown>;
 
@@ -62,6 +68,24 @@ function parseStatusList(raw: string | undefined, allowed: readonly string[], fa
     .map((value) => value.trim())
     .filter((value) => allowed.includes(value));
   return list.length > 0 ? list : fallback;
+}
+
+/** 逗号分隔的编码列表 → 去掉空项的编码数组（保持输入顺序） */
+function parseCodeList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+/**
+ * as_of 归一为业务日（YYYY-MM-DD）。
+ * 生效期（effective_from / effective_to）是业务日字符串，若把 ISO 时间戳直接与日期串比较，
+ * 「当天到期」会被判成已失效；故先换算到 UTC+8 业务日再比。
+ */
+function asOfBusinessDate(asOf: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? asOf : businessDateOf(asOf);
 }
 
 // ---------- IF-1 物料主数据 ----------
@@ -574,4 +598,169 @@ export function listPublicWarehouses(query: PublicWarehousesQuery): Row[] {
          ${clause} ORDER BY w.type, w.code`,
     )
     .all(...params) as Row[];
+}
+
+// ---------- IF-8 替代关系（关系清单，非规划结果） ----------
+
+/**
+ * 列出某主料的替代关系配置：只回答「配了哪些替代料」，不做可用量计算。
+ * `warehouse_code` 给定时同时纳入全仓通用（warehouse_id IS NULL）与该仓专属的关系；
+ * 未知主料 / 仓库编码返回空页（与 IF-2 一致），避免下游把「查不到」当成错误重试。
+ */
+export function listPublicSubstitutes(query: PublicSubstitutesQuery): PublicPaged {
+  const db = getDb();
+  const mainItemId = idByCode('item', query.main_item_code);
+  if (mainItemId === null) return emptyPage(query);
+
+  let warehouseId: number | undefined;
+  if (query.warehouse_code) {
+    const id = idByCode('warehouse', query.warehouse_code);
+    if (id === null) return emptyPage(query);
+    warehouseId = id;
+  }
+  const asOfDate = query.as_of ? asOfBusinessDate(query.as_of) : undefined;
+
+  const where: string[] = ['s.main_item_id = ?'];
+  const params: unknown[] = [mainItemId];
+  if (warehouseId !== undefined) {
+    where.push('(s.warehouse_id IS NULL OR s.warehouse_id = ?)');
+    params.push(warehouseId);
+  }
+  if (query.scene) {
+    where.push('s.scene = ?');
+    params.push(query.scene);
+  }
+  if (asOfDate !== undefined) {
+    // 边界含当天：effective_to = as_of 仍视为有效，NULL 为长期有效
+    where.push('(s.effective_from IS NULL OR s.effective_from <= ?)');
+    params.push(asOfDate);
+    where.push('(s.effective_to IS NULL OR s.effective_to >= ?)');
+    params.push(asOfDate);
+  }
+
+  const clause = `WHERE ${where.join(' AND ')}`;
+  const base = `
+    FROM item_substitute s
+    JOIN item mi ON mi.id = s.main_item_id
+    JOIN item si ON si.id = s.sub_item_id
+    LEFT JOIN item pi ON pi.id = s.parent_item_id
+    LEFT JOIN warehouse w ON w.id = s.warehouse_id`;
+
+  const { total } = db.prepare(`SELECT COUNT(*) AS total ${base} ${clause}`).get(...params) as {
+    total: number;
+  };
+  const list = db
+    .prepare(
+      `SELECT mi.code AS main_item_code, mi.name AS main_item_name,
+              si.code AS sub_item_code, si.name AS sub_item_name, si.base_unit AS sub_base_unit,
+              pi.code AS parent_item_code, w.code AS warehouse_code,
+              s.priority, s.ratio_num, s.ratio_den, s.scene, s.strategy,
+              s.effective_from, s.effective_to, s.is_active
+       ${base} ${clause}
+       ORDER BY s.priority ASC, si.code ASC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];
+
+  const warnings = asOfDate
+    ? [
+        '指定 as_of 时仅按生效期（effective_from / effective_to）筛选替代关系；本接口只返回关系配置，可用库存始终为当前时点、且不在本接口返回范围内',
+      ]
+    : [];
+  return { list, page: pageOf(query, total), warnings };
+}
+
+// ---------- IF-9 替代规划（只读试算，整份返回） ----------
+
+export interface PublicSubstitutionPlan {
+  as_of: string;
+  main_item_code: string;
+  warehouse_code: string;
+  scene: SubstituteScene;
+  strategy: SubstituteStrategy;
+  required_qty: number;
+  filled_qty: number;
+  gap_qty: number;
+  allocations: Row[];
+  skipped: { item_code: string; reason: SubstitutionSkipReason }[];
+}
+
+/**
+ * 调用纯只读的 `planSubstitution` 并转成 snake_case 出参。
+ * 编码一律先解析为 id：主料 / 仓库 / 客户不存在时 404（不静默回退成空规划，
+ * 否则下游会把「编码写错」当成「确实没有替代料」）；父件与手工替代料同理。
+ */
+export function substitutionPlan(query: PublicSubstitutionPlanQuery): {
+  data: PublicSubstitutionPlan;
+  warnings: string[];
+} {
+  const mainItemId = idByCode('item', query.main_item_code);
+  if (mainItemId === null) throw new ApiError(404, `物料不存在：${query.main_item_code}`);
+  const warehouseId = idByCode('warehouse', query.warehouse_code);
+  if (warehouseId === null) throw new ApiError(404, `仓库不存在：${query.warehouse_code}`);
+
+  let customerId: number | null = null;
+  if (query.customer_code) {
+    customerId = idByCode('partner', query.customer_code);
+    if (customerId === null) throw new ApiError(404, `客户不存在：${query.customer_code}`);
+  }
+  let parentItemId: number | null = null;
+  if (query.parent_item_code) {
+    parentItemId = idByCode('item', query.parent_item_code);
+    if (parentItemId === null) throw new ApiError(404, `父件物料不存在：${query.parent_item_code}`);
+  }
+
+  const manualItemIds: number[] = [];
+  for (const code of parseCodeList(query.manual_item_codes)) {
+    const id = idByCode('item', code);
+    if (id === null) throw new ApiError(404, `替代料不存在：${code}`);
+    manualItemIds.push(id);
+  }
+
+  // 与 planSubstitution 内部口径一致：as_of 只作用于关系生效期，可用量永远是当前时点
+  const asOfDate = query.as_of ? asOfBusinessDate(query.as_of) : businessToday();
+  const plan = planSubstitution({
+    mainItemId,
+    warehouseId,
+    requiredQty: query.required_qty,
+    scene: query.scene,
+    customerId,
+    parentItemId,
+    strategy: query.strategy,
+    manualItemIds: manualItemIds.length > 0 ? manualItemIds : undefined,
+    asOf: asOfDate,
+  });
+
+  const warnings = [...plan.warnings];
+  if (query.as_of) {
+    warnings.push(
+      '指定 as_of 时仅按生效期（effective_from / effective_to）筛选替代关系；可用库存与成本始终为当前时点，历史时点的可用量不可还原',
+    );
+  }
+
+  return {
+    data: {
+      as_of: asOfDate,
+      main_item_code: plan.mainItemCode,
+      warehouse_code: query.warehouse_code,
+      scene: plan.scene,
+      strategy: plan.strategy,
+      required_qty: plan.requiredQty,
+      filled_qty: plan.filledQty,
+      gap_qty: plan.gapQty,
+      allocations: plan.allocations.map((entry) => ({
+        item_code: entry.itemCode,
+        item_name: entry.itemName,
+        quantity: entry.quantity,
+        covered_qty: entry.coveredQty,
+        is_main: entry.isMain,
+        available: entry.available,
+        unit_cost: entry.unitCost,
+        ratio_num: entry.ratioNum,
+        ratio_den: entry.ratioDen,
+      })),
+      skipped: plan.skipped.map((entry) => ({ item_code: entry.itemCode, reason: entry.reason })),
+    },
+    warnings,
+  };
 }

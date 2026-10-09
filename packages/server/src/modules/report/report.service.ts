@@ -2,6 +2,7 @@ import type {
   ItemMovementQuery,
   LedgerQuery,
   StockSnapshotQuery,
+  SubstituteUsageQuery,
   SupplierLeadTimeQuery,
 } from '@light-erp/shared';
 import { getDb } from '../../db/connection';
@@ -363,4 +364,134 @@ export function querySupplierLeadTime(
       : suppliers.slice((query.page - 1) * query.pageSize, (query.page - 1) * query.pageSize + query.pageSize)
   ) as unknown as Row[];
   return { list, page: { page: query.page, pageSize: query.pageSize, total }, warnings: [] };
+}
+
+// ---------- IF-R5 替代料使用 / 呆滞 ----------
+
+/**
+ * 呆滞阈值（自然日）：距最后一次替代使用达到该天数即判为呆滞。
+ * 独立导出以便前后端 / 文档统一引用，避免 90 这个数字散落。
+ */
+export const SUBSTITUTE_IDLE_DAYS = 90;
+
+type SubstituteUsageRow = {
+  item_code: string;
+  item_name: string;
+  base_unit: string;
+  substitution_count: number;
+  total_sub_qty: number;
+  last_used_at: string | null;
+  idle_days: number | null;
+  is_idle: 0 | 1;
+};
+
+/**
+ * 替代料使用 / 呆滞分析（IF-R5），一行一个**替代料物料**。
+ *
+ * 数据源：`item_substitute` 的去重替代料 ∪ `item_substitute_log` 出现过的替代料，
+ * 再 LEFT JOIN 日志聚合。之所以从左连接而不是只扫日志：
+ *   - 「配了替代关系但从未真正用过」的物料必须出现在报表里（substitution_count = 0），
+ *     否则最该关注的呆滞项恰恰会消失；这类行只能来自 `item_substitute`。
+ *   - 反过来，日志是「确实用过」的唯一权威记录：替代关系后来被删 / 停用时，
+ *     历史使用痕迹不应随之丢失，故日志里出现过的替代料也独立成行。
+ *   两张表都取并集后，报表既不漏「未用过」，也不漏「用过但关系已撤」。
+ *
+ * 区间语义：`dateFrom` / `dateTo` 按业务日（UTC+8）边界过滤日志 `created_at`，
+ * 三个聚合列（count / total / last_used_at）都只统计区间内的日志 —— 与明细账「统计区间」
+ * 口径一致。因此缩小 / 挪动区间会同时改变呆滞判定（区间内最后一次使用），
+ * 服务层会就此给出告警。
+ *
+ * 呆滞判定用业务日（UTC+8）：`idle_days` 为「最后一次使用的业务日 → 今日业务日」的自然日差，
+ * 从未使用为 null；`is_idle` 对「从未使用」与「idle_days ≥ SUBSTITUTE_IDLE_DAYS」都为 1。
+ */
+export function querySubstituteUsage(
+  query: SubstituteUsageQuery,
+  options: ReportQueryOptions = {},
+): ReportPaged {
+  const db = getDb();
+  const from = normalizeAsOf(query.dateFrom, false);
+  const to = normalizeAsOf(query.dateTo, true);
+
+  const rows = db
+    .prepare(
+      `WITH sub_items AS (
+         SELECT sub_item_id AS item_id FROM item_substitute
+         UNION
+         SELECT sub_item_id AS item_id FROM item_substitute_log
+       ),
+       usage AS (
+         SELECT l.sub_item_id AS item_id,
+                COUNT(*) AS substitution_count,
+                SUM(l.sub_actual_qty) AS total_sub_qty
+           FROM item_substitute_log l
+          WHERE (@dateFrom IS NULL OR l.created_at >= @dateFrom)
+            AND (@dateTo IS NULL OR l.created_at <= @dateTo)
+          GROUP BY l.sub_item_id
+       ),
+       -- 呆滞判定必须看「全部历史」的最后一次使用：若也按区间取 MAX，
+       -- 任何区间过滤都会把区间外用过的替代料显示成"从未使用"，90 天口径随即失真。
+       last_usage AS (
+         SELECT l.sub_item_id AS item_id, MAX(l.created_at) AS last_used_at
+           FROM item_substitute_log l
+          GROUP BY l.sub_item_id
+       )
+       SELECT i.code AS item_code, i.name AS item_name, i.base_unit,
+              COALESCE(u.substitution_count, 0) AS substitution_count,
+              COALESCE(u.total_sub_qty, 0) AS total_sub_qty,
+              lu.last_used_at AS last_used_at
+         FROM sub_items s
+         JOIN item i ON i.id = s.item_id
+         LEFT JOIN usage u ON u.item_id = s.item_id
+         LEFT JOIN last_usage lu ON lu.item_id = s.item_id
+        WHERE (@keyword IS NULL OR i.code LIKE @keyword OR i.name LIKE @keyword)`,
+    )
+    .all({
+      keyword: query.keyword ? `%${query.keyword}%` : null,
+      dateFrom: from,
+      dateTo: to,
+    }) as Omit<SubstituteUsageRow, 'idle_days' | 'is_idle'>[];
+
+  const today = businessToday();
+  const enriched: SubstituteUsageRow[] = rows.map((row) => {
+    // 呆滞按业务日算：先取最后一次使用的业务日，再与今日业务日相减（不用 UTC 取日）
+    const lastUsedDay = row.last_used_at === null ? null : businessDateOf(row.last_used_at);
+    const idleDays = lastUsedDay === null ? null : daysBetween(lastUsedDay, today);
+    return {
+      ...row,
+      idle_days: idleDays,
+      is_idle: idleDays === null || idleDays >= SUBSTITUTE_IDLE_DAYS ? 1 : 0,
+    };
+  });
+
+  const matched = query.onlyIdle === 1 ? enriched.filter((row) => row.is_idle === 1) : enriched;
+  // 呆滞列由 JS 依「今日业务日」推导，故排序 / 分页也在 JS 侧完成
+  matched.sort((a, b) => {
+    if (a.is_idle !== b.is_idle) return b.is_idle - a.is_idle;
+    if (a.last_used_at !== b.last_used_at) {
+      if (a.last_used_at === null) return -1; // NULLS FIRST：呆滞项里「从未使用」排最前
+      if (b.last_used_at === null) return 1;
+      return a.last_used_at < b.last_used_at ? -1 : 1;
+    }
+    return a.item_code.localeCompare(b.item_code);
+  });
+
+  const total = matched.length;
+  const list: Row[] = options.all
+    ? matched
+    : matched.slice(
+        (query.page - 1) * query.pageSize,
+        (query.page - 1) * query.pageSize + query.pageSize,
+      );
+
+  const warnings = [
+    `呆滞判定：自最后一次替代使用起 ≥ ${SUBSTITUTE_IDLE_DAYS} 个自然日未再使用（按业务日 UTC+8 计算）`,
+  ];
+  if (from || to) {
+    warnings.push(
+      `统计区间：${from ? businessDateOf(from) : '不限'} ~ ${to ? businessDateOf(to) : '不限'}` +
+        `（替代日志按业务日 UTC+8 边界过滤，仅影响 substitution_count / total_sub_qty；` +
+        `last_used_at 与呆滞判定**始终按全部历史**，不受区间影响）`,
+    );
+  }
+  return { list, page: { page: query.page, pageSize: query.pageSize, total }, warnings };
 }

@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
 import { salesOutboundBodySchema } from '@light-erp/shared';
+import { buildApp } from '../../app';
 import type { Db } from '../../db/connection';
 import { ApiError } from '../../lib/response';
-import { createTestDb, seedFixtures, type Fixtures } from '../../test/db';
+import { createAuthorizedUser, createTestDb, seedFixtures, type Fixtures } from '../../test/db';
 import { queryStockList } from '../inventory/stock.query';
-import { readBalanceByStatus, readWarehouseCost } from '../inventory/stock.engine';
+import { postMovement, readBalanceByStatus, readWarehouseCost } from '../inventory/stock.engine';
 import { receivePurchase } from '../purchase/purchase.inbound';
 import {
   confirmOrder as confirmPurchase,
@@ -485,5 +487,433 @@ describe('回归：同一订单行不得重复提交', () => {
     expect(() =>
       db.prepare('UPDATE sales_order_item SET shipped_qty = 100 WHERE id = ?').run(itemId),
     ).not.toThrow();
+  });
+});
+// ============================================================
+// P10 替代料出库（执行路径）
+// 账本里替代出库仍是一笔普通 sale_out，「这是替代」记入 item_substitute_log。
+// ============================================================
+
+function makeItem(code: string): number {
+  const now = new Date().toISOString();
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO item (code, name, base_unit, is_active, qty_precision, inspection_required, created_at, updated_at)
+         VALUES (?, ?, 'EA', 1, 0, 0, ?, ?)`,
+      )
+      .run(code, `物料${code}`, now, now).lastInsertRowid,
+  );
+}
+
+/** 直接给任意物料造 available 库存 */
+function stockItem(itemId: number, qty: number, unitCost = 500): void {
+  if (qty <= 0) return;
+  postMovement({
+    productId: itemId,
+    warehouseId: fx.warehouseId,
+    stockStatus: 'available',
+    bizType: 'adjust',
+    direction: 1,
+    quantity: qty,
+    unitCost,
+    occurredAt: '2026-01-01T00:00:00.000Z',
+  });
+}
+
+function relate(mainId: number, subId: number, ratioNum = 1, ratioDen = 1): number {
+  const now = new Date().toISOString();
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO item_substitute
+           (main_item_id, sub_item_id, priority, ratio_num, ratio_den, scene, strategy, is_active, created_at, updated_at)
+         VALUES (?, ?, 1, ?, ?, 'sales_out', 'proportion', 1, ?, ?)`,
+      )
+      .run(mainId, subId, ratioNum, ratioDen, now, now).lastInsertRowid,
+  );
+}
+
+function certify(itemId: number, customerId: number, expireAt: string | null = null): void {
+  db.prepare(
+    `INSERT INTO item_customer_certification (item_id, customer_id, certified_at, expire_at)
+     VALUES (?, ?, '2026-01-01', ?)`,
+  ).run(itemId, customerId, expireAt);
+}
+
+function substitutionLogs(): {
+  main_item_id: number;
+  main_need_qty: number;
+  main_actual_qty: number;
+  sub_item_id: number;
+  sub_actual_qty: number;
+  ratio_num: number;
+  ratio_den: number;
+  order_item_id: number;
+}[] {
+  return db
+    .prepare(
+      `SELECT main_item_id, main_need_qty, main_actual_qty, sub_item_id, sub_actual_qty,
+              ratio_num, ratio_den, order_item_id
+         FROM item_substitute_log ORDER BY id`,
+    )
+    .all() as never;
+}
+
+describe('P10 销售出库替代 · allowSubstitute 自动补齐', () => {
+  it('主料不足由替代料补齐：账本按各自物料扣减，日志留痕，shipped_qty 仍按主料口径', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500); // 主料 available 30
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+    // 销售出库替代要求替代料已对该客户认证（正向认证，default-deny）
+    certify(sub, fx.customerId, '2027-01-01');
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    const result = shipSales(
+      { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+      null,
+    );
+
+    // 主料扣 30、替代料扣 70
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(0);
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(130);
+    expect(result.transactionIds).toHaveLength(2);
+
+    // shipped_qty 是"客户订的主料被满足了多少"，不因替代而改变口径
+    const item = db
+      .prepare('SELECT shipped_qty FROM sales_order_item WHERE id = ?')
+      .get(itemId) as { shipped_qty: number };
+    expect(item.shipped_qty).toBe(100);
+    expect(getOrderDetail(id).order.status).toBe('shipped');
+
+    // 追溯：一条替代日志，记录主料需求/实际用量与替代料实际用量
+    expect(substitutionLogs()).toEqual([
+      {
+        main_item_id: fx.itemId,
+        main_need_qty: 100,
+        main_actual_qty: 30,
+        sub_item_id: sub,
+        sub_actual_qty: 70,
+        ratio_num: 1,
+        ratio_den: 1,
+        order_item_id: itemId,
+      },
+    ]);
+
+    // 账本不变量：余额 = 流水净额（按 物料+仓库+状态）
+    const mismatch = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM stock_balance b
+          WHERE b.quantity <> (SELECT COALESCE(SUM(t.direction * t.quantity), 0) FROM stock_transaction t
+                                WHERE t.product_id = b.product_id AND t.warehouse_id = b.warehouse_id
+                                  AND t.stock_status = b.stock_status)`,
+      )
+      .get() as { n: number };
+    expect(mismatch.n).toBe(0);
+  });
+
+  it('按比例 1:2 换算替代料用量', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub, 1, 2);
+    certify(sub, fx.customerId, '2027-01-01');
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+    shipSales(
+      { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+      null,
+    );
+
+    // 缺口 70 → 35 个替代料
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(165);
+    expect(substitutionLogs()[0]).toMatchObject({ sub_actual_qty: 35, ratio_num: 1, ratio_den: 2 });
+  });
+
+  it('替代料也不足 → 409 且整单不落库（事务回滚）', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 20, 700);
+    relate(fx.itemId, sub);
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      shipSales(
+        { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+        null,
+      ),
+    ).toThrow(ApiError);
+
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(30);
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(20);
+    expect(
+      (db.prepare('SELECT COUNT(*) AS n FROM item_substitute_log').get() as { n: number }).n,
+    ).toBe(0);
+    expect(getOrderDetail(id).order.status).toBe('confirmed');
+  });
+
+  it('未指定 allowSubstitute 的行行为不变：主料不足仍直接 409', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      shipSales({ orderId: id, lines: [{ orderItemId: itemId, quantity: 100 }] }, null),
+    ).toThrow(/物理可用库存不足/);
+  });
+
+  it('多行同时引用同一替代料时按汇总需求校验，不会各自看到全部可用量而超发', () => {
+    const sub = makeItem('RM-SUB-1');
+    stockItem(sub, 60, 700); // 只够一行 50，不够两行
+    relate(fx.itemId, sub);
+    certify(sub, fx.customerId, '2027-01-01');
+
+    const id = createConfirmed([
+      salesItem({ quantity: 50 }),
+      salesItem({ quantity: 50 }),
+    ]);
+    const items = getOrderDetail(id).items;
+
+    expect(() =>
+      shipSales(
+        {
+          orderId: id,
+          lines: items.map((row) => ({ orderItemId: row.id, quantity: 50, allowSubstitute: true })),
+        },
+        null,
+      ),
+    ).toThrow(/物理可用库存不足/);
+
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(60);
+    expect(
+      (db.prepare('SELECT COUNT(*) AS n FROM item_substitute_log').get() as { n: number }).n,
+    ).toBe(0);
+  });
+});
+
+describe('P10 销售出库替代 · substituteItemId 手工指定', () => {
+  it('缺口只由指定替代料补（主料仍优先）', () => {
+    const chosen = makeItem('RM-SUB-CHOSEN');
+    const other = makeItem('RM-SUB-OTHER');
+    seedStock(30, 500);
+    stockItem(chosen, 200, 700);
+    stockItem(other, 200, 900);
+    relate(fx.itemId, other, 1, 1); // 优先级更高的是 other
+    relate(fx.itemId, chosen, 1, 1);
+    certify(chosen, fx.customerId, '2027-01-01');
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    shipSales(
+      {
+        orderId: id,
+        lines: [{ orderItemId: itemId, quantity: 100, substituteItemId: chosen }],
+      },
+      null,
+    );
+
+    // other 完全没被动用，chosen 扣 70
+    expect(readBalanceByStatus(db, other, fx.warehouseId).available).toBe(200);
+    expect(readBalanceByStatus(db, chosen, fx.warehouseId).available).toBe(130);
+  });
+
+  it('指定的替代料不存在替代关系 → 409 并说明缺口', () => {
+    const stray = makeItem('RM-NO-RELATION');
+    seedStock(30, 500);
+    stockItem(stray, 200, 700);
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      shipSales(
+        { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, substituteItemId: stray }] },
+        null,
+      ),
+    ).toThrow(/仍缺/);
+  });
+
+  it('同一行同时给 allowSubstitute 与 substituteItemId → schema 拒绝', () => {
+    expect(
+      salesOutboundBodySchema.safeParse({
+        orderId: 1,
+        lines: [{ orderItemId: 1, quantity: 1, allowSubstitute: true, substituteItemId: 2 }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('P10 销售出库替代 · 客户正向认证', () => {
+  it('替代料未对该客户认证 → 409，且提示里点明认证原因', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    let message = '';
+    try {
+      shipSales(
+        { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+        null,
+      );
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('customer_not_certified');
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(200);
+  });
+
+  it('认证有效 → 正常替代出库', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+    certify(sub, fx.customerId, '2027-01-01');
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    shipSales(
+      { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+      null,
+    );
+
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(130);
+  });
+
+  it('认证已过期 → 409（原因 customer_cert_expired）', () => {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+    certify(sub, fx.customerId, '2026-01-02');
+
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const itemId = getOrderDetail(id).items[0].id;
+
+    expect(() =>
+      shipSales(
+        { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, allowSubstitute: true }] },
+        null,
+      ),
+    ).toThrow(/customer_cert_expired/);
+  });
+});
+
+// ============================================================
+// P10 替代料出库 · 权限分离（sales.outbound.substitute）
+// 「看替代建议」与「实际用替代料出库」是两个权限；路由层按请求内容条件校验。
+// ============================================================
+describe('P10 替代料出库权限', () => {
+  let app: FastifyInstance;
+  const apps: FastifyInstance[] = [];
+
+  async function buildTestApp(): Promise<FastifyInstance> {
+    const instance = await buildApp();
+    apps.push(instance);
+    return instance;
+  }
+
+  afterEach(async () => {
+    while (apps.length > 0) await apps.pop()!.close();
+  });
+
+  function setupOrder(): { orderId: number; orderItemId: number; sub: number } {
+    const sub = makeItem('RM-SUB-1');
+    seedStock(30, 500);
+    stockItem(sub, 200, 700);
+    relate(fx.itemId, sub);
+    certify(sub, fx.customerId, '2027-01-01');
+    const id = createConfirmed([salesItem({ quantity: 100 })]);
+    const orderItemId = getOrderDetail(id).items[0].id;
+    return { orderId: id, orderItemId, sub };
+  }
+
+  function tokenFor(permissions: string[]): string {
+    const userId = createAuthorizedUser(db, permissions);
+    return app.jwt.sign({ sub: userId, name: 'tester', roles: [], permissions });
+  }
+
+  it('未登录 → 401', async () => {
+    app = await buildTestApp();
+    const { orderId, orderItemId } = setupOrder();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sales/outbound',
+      payload: { orderId, lines: [{ orderItemId, quantity: 100, allowSubstitute: true }] },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('只有 sales.outbound.manage、请求使用替代料 → 403 且不落库', async () => {
+    app = await buildTestApp();
+    const { orderId, orderItemId } = setupOrder();
+    const token = tokenFor(['sales.outbound.manage']);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sales/outbound',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { orderId, lines: [{ orderItemId, quantity: 100, allowSubstitute: true }] },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toBe('无替代料出库权限');
+    // 未产生任何移动
+    expect(readBalanceByStatus(db, fx.itemId, fx.warehouseId).available).toBe(30);
+    expect(
+      (db.prepare('SELECT COUNT(*) AS n FROM item_substitute_log').get() as { n: number }).n,
+    ).toBe(0);
+  });
+
+  it('同一 token 走普通出库（不带替代字段）不受该权限限制 → 200', async () => {
+    app = await buildTestApp();
+    const { orderId, orderItemId } = setupOrder();
+    // 主料只有 30，改用 30 的普通出库即可成功
+    const token = tokenFor(['sales.outbound.manage']);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sales/outbound',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { orderId, lines: [{ orderItemId, quantity: 30 }] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().code).toBe(0);
+  });
+
+  it('同时具备两个权限 → 200 且写入替代追溯日志', async () => {
+    app = await buildTestApp();
+    const { orderId, orderItemId, sub } = setupOrder();
+    const token = tokenFor(['sales.outbound.manage', 'sales.outbound.substitute']);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sales/outbound',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { orderId, lines: [{ orderItemId, quantity: 100, allowSubstitute: true }] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(readBalanceByStatus(db, sub, fx.warehouseId).available).toBe(130);
+    expect(
+      (db.prepare('SELECT COUNT(*) AS n FROM item_substitute_log').get() as { n: number }).n,
+    ).toBe(1);
   });
 });

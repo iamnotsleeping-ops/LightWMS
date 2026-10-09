@@ -93,7 +93,9 @@ export const openapiDocument = {
     description:
       '供下游供应链计划与推演引擎消费的只读接口。全部 GET、无需鉴权、支持 format=json|csv。' +
       '历史时点（as_of）一律从 stock_transaction 按 occurred_at <= as_of 重算；' +
-      '在途 / 预占等单据派生量历史不可还原，返回 null 并在 _warnings 中提示。',
+      '在途 / 预占等单据派生量历史不可还原，返回 null 并在 _warnings 中提示。' +
+      '替代料接口分两层：/substitutes 只给「配了哪些替代关系」，/substitution-plan 给分配建议（只读试算，不写任何单据或库存）；' +
+      '两者的 as_of 都只筛选替代关系生效期，可用量与成本始终是当前时点。',
   },
   servers: [{ url: '/api/v1' }],
   tags: [{ name: 'public', description: '对外只读接口' }],
@@ -481,6 +483,169 @@ export const openapiDocument = {
               updated_at: '2026-10-08T02:45:18.125Z',
             },
           ]),
+        },
+      },
+    },
+    '/substitutes': {
+      get: {
+        tags: ['public'],
+        summary: 'IF-8 替代关系（关系清单，非规划结果）',
+        description:
+          '只返回已配置的替代关系本身：谁可以替代谁、比例 / 优先级 / 场景 / 策略 / 生效期 / 适用仓与父件，' +
+          '不计算可用量、不给出分配建议（分配建议见 IF-9 /substitution-plan）。' +
+          '指定 warehouse_code 时同时返回「全仓通用」关系（warehouse_code 为 null）与该仓专属关系；' +
+          '指定 as_of 时只按生效期筛选关系有效性（effective_from / effective_to，null 表示不设边界），' +
+          '该筛选不影响库存——可用量始终是当前时点，且不在本接口返回范围内。',
+        parameters: [
+          {
+            ...codeParam('main_item_code', 'RM-001'),
+            required: true,
+            description: '主料编码，精确匹配（必填）',
+          },
+          codeParam('warehouse_code', 'WH-01'),
+          {
+            name: 'scene',
+            in: 'query',
+            required: false,
+            description: '替代场景',
+            schema: { type: 'string', enum: ['sales_out', 'bom_plan', 'purchase_hint'] },
+          },
+          AS_OF_PARAM,
+          FORMAT_PARAM,
+          PAGE_PARAM,
+          PAGE_SIZE_PARAM,
+        ],
+        responses: {
+          '200': envelopeResponse(
+            [
+              {
+                main_item_code: 'RM-3001',
+                main_item_name: '主控芯片',
+                sub_item_code: 'RM-3002',
+                sub_item_name: '国产主控芯片',
+                sub_base_unit: 'EA',
+                parent_item_code: null,
+                warehouse_code: null,
+                priority: 1,
+                ratio_num: 1,
+                ratio_den: 1,
+                scene: 'sales_out',
+                strategy: 'proportion',
+                effective_from: '2026-01-01',
+                effective_to: null,
+                is_active: 1,
+              },
+            ],
+            true,
+          ),
+        },
+      },
+    },
+    '/substitution-plan': {
+      get: {
+        tags: ['public'],
+        summary: 'IF-9 替代规划（只读试算，整份返回）',
+        description:
+          '按主料 + 仓库 + 需求量给出替代分配建议；只读试算，不写任何单据或库存（调用前后库存与替代关系零变化）。' +
+          '三种 strategy：proportion 主料优先，缺口按 priority 用替代料按比例（ratio_num / ratio_den）补齐；' +
+          'whole_batch 不做混用——主料可全额覆盖就全用主料，否则找单一替代料整批顶上，都做不到时不做任何分配并全量返回缺口；' +
+          'manual 主料优先，缺口只用手工指定的 manual_item_codes（按给定顺序）补。' +
+          '规划结果整份返回、不分页：page / page_size 仅为与其它接口保持入参一致而接收，不影响结果；' +
+          'format=csv 时一行 = 一条 allocation。' +
+          'as_of 只筛选替代关系生效期（effective_from / effective_to），可用库存与成本始终是当前时点，历史时点不可还原，并在 _warnings 中提示。',
+        parameters: [
+          {
+            ...codeParam('main_item_code', 'RM-001'),
+            required: true,
+            description: '主料编码（必填）',
+          },
+          {
+            ...codeParam('warehouse_code', 'WH-01'),
+            required: true,
+            description: '仓库编码（必填）',
+          },
+          {
+            name: 'required_qty',
+            in: 'query',
+            required: true,
+            description: '主料口径的需求量（正整数）',
+            schema: { type: 'integer', minimum: 1, example: 100 },
+          },
+          {
+            name: 'scene',
+            in: 'query',
+            required: false,
+            description: '替代场景，缺省 sales_out',
+            schema: {
+              type: 'string',
+              enum: ['sales_out', 'bom_plan', 'purchase_hint'],
+              default: 'sales_out',
+            },
+          },
+          {
+            ...codeParam('customer_code', 'CU-01'),
+            description: '客户编码；scene=sales_out 时用于客户正向认证过滤',
+          },
+          {
+            ...codeParam('parent_item_code', 'FG-001'),
+            description: '父件编码（BOM 语境）；仅匹配该父件下的专属关系与通用关系',
+          },
+          {
+            name: 'strategy',
+            in: 'query',
+            required: false,
+            description: '替代策略，缺省取首个候选关系上的策略',
+            schema: { type: 'string', enum: ['proportion', 'whole_batch', 'manual'] },
+          },
+          {
+            name: 'manual_item_codes',
+            in: 'query',
+            required: false,
+            description: '逗号分隔的替代料编码，仅 strategy=manual 时使用（顺序即分配顺序）',
+            schema: { type: 'string', example: 'RM-3002,RM-3003' },
+          },
+          AS_OF_PARAM,
+          FORMAT_PARAM,
+          PAGE_PARAM,
+          PAGE_SIZE_PARAM,
+        ],
+        responses: {
+          '200': envelopeResponse({
+            as_of: '2026-10-08',
+            main_item_code: 'RM-3001',
+            warehouse_code: 'WH-01',
+            scene: 'sales_out',
+            strategy: 'proportion',
+            required_qty: 100,
+            filled_qty: 100,
+            gap_qty: 0,
+            allocations: [
+              {
+                item_code: 'RM-3001',
+                item_name: '主控芯片',
+                quantity: 30,
+                covered_qty: 30,
+                is_main: true,
+                available: 30,
+                unit_cost: 5000,
+                ratio_num: 1,
+                ratio_den: 1,
+              },
+              {
+                item_code: 'RM-3002',
+                item_name: '国产主控芯片',
+                quantity: 70,
+                covered_qty: 70,
+                is_main: false,
+                available: 200,
+                unit_cost: 4800,
+                ratio_num: 1,
+                ratio_den: 1,
+              },
+            ],
+            skipped: [],
+          }),
+          '404': { description: '主料 / 仓库 / 客户 / 父件 / 手工替代料编码不存在' },
         },
       },
     },

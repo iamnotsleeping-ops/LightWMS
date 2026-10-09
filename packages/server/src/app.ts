@@ -9,6 +9,7 @@ import { registerPurchaseRoutes } from './modules/purchase/routes';
 import { registerPublicRoutes } from './modules/public-api/public.routes';
 import { registerReportRoutes } from './modules/report/report.routes';
 import { registerSalesRoutes } from './modules/sales/routes';
+import { registerSubstituteRoutes } from './modules/substitute/substitute.routes';
 import { registerSystemRoutes } from './modules/system/routes';
 import { registerAuth } from './plugins/auth';
 import { registerErrorHandler } from './plugins/error-handler';
@@ -31,6 +32,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerAuthRoutes(app);
   registerSystemRoutes(app);
   registerMasterdataRoutes(app);
+  registerSubstituteRoutes(app);
   registerInventoryRoutes(app);
   registerPurchaseRoutes(app);
   registerSalesRoutes(app);

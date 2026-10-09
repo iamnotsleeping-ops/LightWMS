@@ -48,6 +48,10 @@ const BUSINESS_TABLES = [
   'stock_alert_rule',
   'stock_transaction',
   'stock_balance',
+  // 替代料：必须先于 item / warehouse 删除。这两张表对 item 有外键且未声明级联，
+  // 若漏在清空清单外，`seed --reset` 会在删 item 时报 FOREIGN KEY 约束失败。
+  'item_substitute_log',
+  'item_substitute',
   'bom',
   'item_customer_certification',
   'item',
@@ -65,6 +69,8 @@ const COUNT_TABLES = [
   'warehouse',
   'partner',
   'bom',
+  'item_substitute',
+  'item_substitute_log',
   'stock_transaction',
   'stock_balance',
   'purchase_order',
@@ -228,6 +234,27 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       `INSERT INTO item_customer_certification (item_id, customer_id, certified_at)
        VALUES (?, ?, ?)`,
     ).run(itemIds['FG-1001'], partnerIds['CU-2001'], dateOffset(-60));
+
+    // ---- 基础资料：替代料（P10） ----
+    // 演示「销售出库替代」：智能网关 B 可顶替智能网关 A 发货，需先对该客户完成认证（正向认证，default-deny）。
+    // 故意只配 1 条关系、且尚无替代执行记录，使「替代料调用 / 呆滞」报表能演示「从未使用 → 呆滞」。
+    db.prepare(
+      `INSERT INTO item_substitute
+         (main_item_id, sub_item_id, parent_item_id, warehouse_id, priority, ratio_num, ratio_den,
+          scene, strategy, cross_warehouse, effective_from, effective_to, is_active, remark, created_at, updated_at)
+       VALUES (?, ?, NULL, NULL, 1, 1, 1, 'sales_out', 'proportion', 0, ?, NULL, 1, ?, ?, ?)`,
+    ).run(
+      itemIds['FG-1001'],
+      itemIds['FG-1002'],
+      dateOffset(-90),
+      '演示：同系列网关可互替发货（1:1，全仓通用）',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO item_customer_certification (item_id, customer_id, certified_at)
+       VALUES (?, ?, ?)`,
+    ).run(itemIds['FG-1002'], partnerIds['CU-2001'], dateOffset(-30));
 
     // ---- 基础资料：BOM（多版本 + 多层） ----
     const insertBom = db.prepare(

@@ -9,5 +9,6 @@ export * from './schemas/sales';
 export * from './schemas/transfer';
 export * from './schemas/stocktake';
 export * from './schemas/alert';
+export * from './schemas/substitute';
 export * from './schemas/report';
 export * from './schemas/publicApi';

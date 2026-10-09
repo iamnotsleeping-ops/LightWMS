@@ -46,6 +46,44 @@ function insertBom(parent: number, child: number, qtyPer: number, from: string, 
   ).run(parent, child, qtyPer, from, to, nowIso(), nowIso());
 }
 
+interface SubstituteOptions {
+  parentItemId?: number | null;
+  warehouseId?: number | null;
+  priority?: number;
+  ratioNum?: number;
+  ratioDen?: number;
+  scene?: 'sales_out' | 'bom_plan' | 'purchase_hint';
+  strategy?: 'proportion' | 'whole_batch' | 'manual';
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  isActive?: number;
+}
+
+/** 直接落一条替代关系（替代关系必须在物料存在之后插入） */
+function insertSubstitute(mainItemId: number, subItemId: number, options: SubstituteOptions = {}): void {
+  db.prepare(
+    `INSERT INTO item_substitute
+       (main_item_id, sub_item_id, parent_item_id, warehouse_id, priority, ratio_num, ratio_den,
+        scene, strategy, cross_warehouse, effective_from, effective_to, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+  ).run(
+    mainItemId,
+    subItemId,
+    options.parentItemId ?? null,
+    options.warehouseId ?? null,
+    options.priority ?? 1,
+    options.ratioNum ?? 1,
+    options.ratioDen ?? 1,
+    options.scene ?? 'sales_out',
+    options.strategy ?? 'proportion',
+    options.effectiveFrom ?? null,
+    options.effectiveTo ?? null,
+    options.isActive ?? 1,
+    nowIso(),
+    nowIso(),
+  );
+}
+
 function addStock(
   productId: number,
   warehouseId: number,
@@ -114,7 +152,7 @@ function makeConfirmedSales(quantity: number): number {
 const get = (url: string) => app.inject({ method: 'GET', url });
 
 describe('对外只读接口 · 公开与信封', () => {
-  it('9 条接口不带 Authorization 均返回 200（公开无鉴权）', async () => {
+  it('11 条接口不带 Authorization 均返回 200（公开无鉴权）', async () => {
     insertBom(fx.portItemId, fx.itemId, 1, '2026-01-01', null);
     const urls = [
       '/api/v1/items',
@@ -126,6 +164,8 @@ describe('对外只读接口 · 公开与信封', () => {
       '/api/v1/suppliers/SU-01/lead-time-stats',
       '/api/v1/sales-orders',
       '/api/v1/warehouses',
+      '/api/v1/substitutes?main_item_code=RM-001',
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=1',
     ];
     for (const url of urls) {
       const res = await get(url);
@@ -433,6 +473,237 @@ describe('IF-7 工厂 / 仓库', () => {
   });
 });
 
+describe('IF-8 替代关系（关系清单）', () => {
+  it('只返回该主料的关系；仓过滤含全仓通用；parent_item_code 映射与优先级排序正确', async () => {
+    const subA = insertItem('RM-002', '替代料甲');
+    const subB = insertItem('RM-003', '替代料乙');
+    const subC = insertItem('RM-004', '替代料丙');
+    // 另一主料（FG-001）的关系：不应出现在 RM-001 的结果里
+    insertSubstitute(fx.portItemId, subA, { priority: 1 });
+    // 全仓通用（warehouse_id / parent_item_id 均为 NULL），优先级 2
+    insertSubstitute(fx.itemId, subA, { priority: 2 });
+    // 该仓 + 该父件专属，优先级 1
+    insertSubstitute(fx.itemId, subB, {
+      priority: 1,
+      warehouseId: fx.warehouseId,
+      parentItemId: fx.portItemId,
+      scene: 'bom_plan',
+    });
+    // 其它仓库专属：按 WH-01 过滤时应被排除
+    insertSubstitute(fx.itemId, subC, { priority: 3, warehouseId: fx.portWarehouseId });
+
+    const all = (await get('/api/v1/substitutes?main_item_code=RM-001')).json();
+    expect(all.code).toBe(0);
+    expect(all.page.total).toBe(3);
+    expect(all.data.map((row: { sub_item_code: string }) => row.sub_item_code)).toEqual([
+      'RM-003',
+      'RM-002',
+      'RM-004',
+    ]);
+
+    const filtered = (await get('/api/v1/substitutes?main_item_code=RM-001&warehouse_code=WH-01')).json();
+    expect(filtered.page.total).toBe(2);
+    expect(filtered.data.map((row: { sub_item_code: string }) => row.sub_item_code)).toEqual([
+      'RM-003',
+      'RM-002',
+    ]);
+    // 仓专属行：父件映射为编码、仓库映射为编码
+    expect(filtered.data[0]).toEqual({
+      main_item_code: 'RM-001',
+      main_item_name: '测试零件',
+      sub_item_code: 'RM-003',
+      sub_item_name: '替代料乙',
+      sub_base_unit: 'EA',
+      parent_item_code: 'FG-001',
+      warehouse_code: 'WH-01',
+      priority: 1,
+      ratio_num: 1,
+      ratio_den: 1,
+      scene: 'bom_plan',
+      strategy: 'proportion',
+      effective_from: null,
+      effective_to: null,
+      is_active: 1,
+    });
+    // 通用行：父件 / 仓库均为 null
+    expect(filtered.data[1]).toMatchObject({
+      sub_item_code: 'RM-002',
+      parent_item_code: null,
+      warehouse_code: null,
+    });
+
+    // scene 过滤
+    const bomScene = (await get('/api/v1/substitutes?main_item_code=RM-001&scene=bom_plan')).json();
+    expect(bomScene.data.map((row: { sub_item_code: string }) => row.sub_item_code)).toEqual(['RM-003']);
+  });
+
+  it('未知 main_item_code 返回空列表且 code=0', async () => {
+    const body = (await get('/api/v1/substitutes?main_item_code=NOPE')).json();
+    expect(body.code).toBe(0);
+    expect(body.data).toEqual([]);
+    expect(body.page.total).toBe(0);
+  });
+
+  it('as_of 过滤生效期：当天到期仍有效，前一天到期已失效', async () => {
+    const subA = insertItem('RM-002', '替代料甲');
+    const subB = insertItem('RM-003', '替代料乙');
+    insertSubstitute(fx.itemId, subA, {
+      priority: 1,
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-06-30',
+    });
+    insertSubstitute(fx.itemId, subB, {
+      priority: 2,
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-06-29',
+    });
+
+    // effective_to = as_of 当天视为仍有效
+    const onLastDay = (await get('/api/v1/substitutes?main_item_code=RM-001&as_of=2026-06-30')).json();
+    expect(onLastDay.data.map((row: { sub_item_code: string }) => row.sub_item_code)).toEqual(['RM-002']);
+    // 关系清单接口的 as_of 只筛生效期，需明示可用量不在本接口范围内
+    expect(onLastDay._warnings.join('\n')).toContain('可用库存始终为当前时点');
+
+    const afterBoth = (await get('/api/v1/substitutes?main_item_code=RM-001&as_of=2026-07-01')).json();
+    expect(afterBoth.data).toEqual([]);
+  });
+});
+
+describe('IF-9 替代规划（只读试算）', () => {
+  /** 主料 30、替代料 subStock，1:1 比例关系 */
+  function seedMainPlusSubstitute(subStock: number): number {
+    const subId = insertItem('RM-002', '替代料甲');
+    insertSubstitute(fx.itemId, subId, { priority: 1, strategy: 'proportion' });
+    addStock(fx.itemId, fx.warehouseId, 30, '2026-06-01T00:00:00.000Z');
+    addStock(subId, fx.warehouseId, subStock, '2026-06-01T00:00:00.000Z');
+    return subId;
+  }
+
+  it('proportion：主料 30 + 替代料 200 满足需求 100，缺口为 0', async () => {
+    seedMainPlusSubstitute(200);
+
+    const body = (
+      await get('/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100')
+    ).json();
+    expect(body.code).toBe(0);
+    expect(body.data).toMatchObject({
+      main_item_code: 'RM-001',
+      warehouse_code: 'WH-01',
+      scene: 'sales_out',
+      strategy: 'proportion',
+      required_qty: 100,
+      filled_qty: 100,
+      gap_qty: 0,
+    });
+    expect(body.data.allocations).toEqual([
+      {
+        item_code: 'RM-001',
+        item_name: '测试零件',
+        quantity: 30,
+        covered_qty: 30,
+        is_main: true,
+        available: 30,
+        unit_cost: 500,
+        ratio_num: 1,
+        ratio_den: 1,
+      },
+      {
+        item_code: 'RM-002',
+        item_name: '替代料甲',
+        quantity: 70,
+        covered_qty: 70,
+        is_main: false,
+        available: 200,
+        unit_cost: 500,
+        ratio_num: 1,
+        ratio_den: 1,
+      },
+    ]);
+    expect(body.data.skipped).toEqual([]);
+    expect(body._warnings).toEqual([]);
+  });
+
+  it('whole_batch：无单一物料可整批覆盖时不混用，gap_qty=需求量 且给出告警', async () => {
+    const subId = insertItem('RM-002', '替代料甲');
+    insertSubstitute(fx.itemId, subId, { priority: 1, strategy: 'whole_batch' });
+    addStock(fx.itemId, fx.warehouseId, 30, '2026-06-01T00:00:00.000Z');
+    addStock(subId, fx.warehouseId, 50, '2026-06-01T00:00:00.000Z');
+
+    const body = (
+      await get(
+        '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100&strategy=whole_batch',
+      )
+    ).json();
+    expect(body.data.strategy).toBe('whole_batch');
+    expect(body.data.filled_qty).toBe(0);
+    expect(body.data.gap_qty).toBe(100);
+    // 宁可缺料也不拆批：未分配任何物料
+    expect(body.data.allocations).toEqual([]);
+    expect(body._warnings.join('\n')).toContain('整批全量策略');
+  });
+
+  it('主料 / 仓库 / 客户 / 父件编码未知均返回 404', async () => {
+    const missingItem = await get(
+      '/api/v1/substitution-plan?main_item_code=NOPE&warehouse_code=WH-01&required_qty=10',
+    );
+    expect(missingItem.statusCode).toBe(404);
+    expect(missingItem.json().code).toBe(404);
+    expect(missingItem.json().message).toContain('物料不存在');
+
+    const missingWarehouse = await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=NOPE&required_qty=10',
+    );
+    expect(missingWarehouse.statusCode).toBe(404);
+    expect(missingWarehouse.json().message).toContain('仓库不存在');
+
+    const missingCustomer = await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=10&customer_code=NOPE',
+    );
+    expect(missingCustomer.statusCode).toBe(404);
+    expect(missingCustomer.json().message).toContain('客户不存在');
+
+    const missingParent = await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=10&parent_item_code=NOPE',
+    );
+    expect(missingParent.statusCode).toBe(404);
+    expect(missingParent.json().message).toContain('父件物料不存在');
+  });
+
+  it('format=csv 返回 text/csv、带 BOM、一行 = 一条分配', async () => {
+    seedMainPlusSubstitute(200);
+
+    const res = await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100&format=csv',
+    );
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.body.charAt(0)).toBe('\uFEFF');
+
+    const lines = res.body.replace(/^\uFEFF/, '').trim().split('\r\n');
+    expect(lines[0]).toContain('item_code');
+    expect(lines[0]).toContain('is_main');
+    expect(lines).toHaveLength(3); // 表头 + 主料 1 行 + 替代料 1 行
+    expect(lines[1]).toContain('RM-001');
+    expect(lines[2]).toContain('RM-002');
+    // CSV 不套信封
+    expect(res.body).not.toContain('"_warnings"');
+  });
+
+  it('指定 as_of 时给出「可用量仍为当前时点」的告警', async () => {
+    seedMainPlusSubstitute(200);
+
+    const body = (
+      await get(
+        '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100&as_of=2026-06-15',
+      )
+    ).json();
+    expect(body.data.as_of).toBe('2026-06-15');
+    expect(body._warnings.join('\n')).toContain('可用库存与成本始终为当前时点');
+    // as_of 不影响可用量取数：分配照常给出
+    expect(body.data.allocations).toHaveLength(2);
+    expect(body.data.gap_qty).toBe(0);
+  });
+});
+
 describe('format=csv', () => {
   it('返回 text/csv、带 BOM、表头为业务列序、空值为空串、含逗号字段加引号', async () => {
     insertItem('RM-002', '含,逗号的零件');
@@ -460,15 +731,15 @@ describe('format=csv', () => {
 });
 
 describe('OpenAPI 文档', () => {
-  it('openapi.json 返回 3.1 且包含 9 条路径', async () => {
+  it('openapi.json 返回 3.1 且包含 11 条路径', async () => {
     const res = await get('/api/v1/openapi.json');
     expect(res.statusCode).toBe(200);
     const doc = res.json();
     expect(doc.openapi.startsWith('3.1')).toBe(true);
-    expect(Object.keys(doc.paths)).toHaveLength(9);
+    expect(Object.keys(doc.paths)).toHaveLength(11);
   });
 
-  it('9 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
+  it('11 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
     const doc = (await get('/api/v1/openapi.json')).json();
     type Doc = {
       get: {
@@ -477,15 +748,21 @@ describe('OpenAPI 文档', () => {
       };
     };
     const entries = Object.entries(doc.paths) as [string, Doc][];
+    // 返回 page 的分页接口；IF-9 虽接收 page / page_size 但整体返回，不带 page
+    const pagedPaths = new Set([
+      '/items',
+      '/inventory',
+      '/in-transit',
+      '/purchase-history',
+      '/sales-orders',
+      '/substitutes',
+    ]);
 
     for (const [path, item] of entries) {
       const { data, page } = item.get.responses['200'].content['application/json'].example;
       expect(typeof data, path).not.toBe('string');
       expect(data !== null && typeof data === 'object', path).toBe(true);
-
-      // 分页接口必须给出 page 样例；非分页接口不应出现 page
-      const paged = item.get.parameters.some((p) => p.name === 'page_size');
-      expect(Boolean(page), `${path} 的 page 样例`).toBe(paged);
+      expect(Boolean(page), `${path} 的 page 样例`).toBe(pagedPaths.has(path));
     }
   });
 });
@@ -511,5 +788,31 @@ describe('只读性', () => {
       balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
     };
     expect(after).toEqual(before);
+  });
+
+  it('IF-8 / IF-9 调用前后 stock_transaction / stock_balance / item_substitute 行数不变', async () => {
+    const subId = insertItem('RM-002', '替代料甲');
+    insertSubstitute(fx.itemId, subId, { priority: 1 });
+    addStock(fx.itemId, fx.warehouseId, 30, '2026-06-01T00:00:00.000Z');
+    addStock(subId, fx.warehouseId, 200, '2026-06-01T00:00:00.000Z');
+
+    const counts = () => ({
+      transactions: (db.prepare('SELECT COUNT(*) AS n FROM stock_transaction').get() as { n: number }).n,
+      balance: (db.prepare('SELECT COUNT(*) AS n FROM stock_balance').get() as { n: number }).n,
+      substitutes: (db.prepare('SELECT COUNT(*) AS n FROM item_substitute').get() as { n: number }).n,
+    });
+    const before = counts();
+
+    await get('/api/v1/substitutes?main_item_code=RM-001');
+    await get('/api/v1/substitutes?main_item_code=RM-001&warehouse_code=WH-01&format=csv');
+    await get('/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100');
+    await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100&format=csv',
+    );
+    await get(
+      '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=100&customer_code=CU-01&as_of=2026-06-15',
+    );
+
+    expect(counts()).toEqual(before);
   });
 });

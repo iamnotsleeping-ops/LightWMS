@@ -8,6 +8,8 @@ import {
   publicLeadTimeStatsQuerySchema,
   publicPurchaseHistoryQuerySchema,
   publicSalesOrdersQuerySchema,
+  publicSubstitutesQuerySchema,
+  publicSubstitutionPlanQuerySchema,
   publicSupplierParamSchema,
   publicWarehousesQuerySchema,
 } from '@light-erp/shared';
@@ -22,8 +24,10 @@ import {
   listPublicItems,
   listPublicPurchaseHistory,
   listPublicSalesOrders,
+  listPublicSubstitutes,
   listPublicWarehouses,
   queryPublicInventory,
+  substitutionPlan,
   supplierLeadTimeStats,
 } from './public.service';
 
@@ -103,6 +107,23 @@ export function registerPublicRoutes(app: FastifyInstance): void {
     const list = listPublicWarehouses(query);
     if (query.format === 'csv') return sendCsv(reply, list, 'warehouses');
     return ok(list);
+  });
+
+  app.get('/api/v1/substitutes', async (request, reply) => {
+    const query = publicSubstitutesQuerySchema.parse(request.query);
+    const result = listPublicSubstitutes(query);
+    if (query.format === 'csv') return sendCsv(reply, result.list, 'substitutes', result.warnings);
+    return okPage(result.list, result.page, result.warnings);
+  });
+
+  app.get('/api/v1/substitution-plan', async (request, reply) => {
+    const query = publicSubstitutionPlanQuerySchema.parse(request.query);
+    const { data, warnings } = substitutionPlan(query);
+    // CSV 一行 = 一条分配；规划整体返回，page / page_size 不参与切分
+    if (query.format === 'csv') {
+      return sendCsv(reply, data.allocations, `substitution-plan-${data.main_item_code}`, warnings);
+    }
+    return { code: 0, message: 'ok', data, _warnings: warnings };
   });
 
   app.get('/api/v1/openapi.json', async () => openapiDocument);

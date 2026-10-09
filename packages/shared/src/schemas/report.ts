@@ -19,6 +19,14 @@ const optionalId = z.preprocess(
 const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
   z.preprocess(emptyToUndefined, z.enum(values).optional());
 
+/** 查询串里的布尔值兼容 true/false 与 0/1，统一转 0/1（与子表 / 预警的同类筛选一致） */
+const optionalBoolInt = z.preprocess((value) => {
+  if (value === undefined || value === '') return undefined;
+  if (value === true || value === 'true' || value === '1' || value === 1) return 1;
+  if (value === false || value === 'false' || value === '0' || value === 0) return 0;
+  return undefined;
+}, z.union([z.literal(0), z.literal(1)]).optional());
+
 const REPORT_FORMATS = ['json', 'csv'] as const;
 export type ReportFormat = (typeof REPORT_FORMATS)[number];
 
@@ -67,3 +75,17 @@ export const supplierLeadTimeQuerySchema = paginationQuerySchema.extend({
   format: reportFormatSchema,
 });
 export type SupplierLeadTimeQuery = z.infer<typeof supplierLeadTimeQuerySchema>;
+
+// ---------- IF-R5 替代料使用 / 呆滞 ----------
+/**
+ * `onlyIdle` 为真时只返回 `is_idle` 行（从未使用，或距最后一次替代使用 ≥ 阈值天数）。
+ * `dateFrom` / `dateTo` 过滤替代日志 `created_at`（按业务日 UTC+8 边界归一）。
+ */
+export const substituteUsageQuerySchema = paginationQuerySchema.extend({
+  keyword: optionalText(100),
+  dateFrom: asOfSchema,
+  dateTo: asOfSchema,
+  onlyIdle: optionalBoolInt,
+  format: reportFormatSchema,
+});
+export type SubstituteUsageQuery = z.infer<typeof substituteUsageQuerySchema>;
