@@ -2,20 +2,23 @@ import { getDb, type Db } from './connection';
 import { runMigrations } from './migrate';
 import { createAlertRule } from '../modules/inventory/alert.service';
 import { changeStockStatus, postMovement, readBalanceByStatus } from '../modules/inventory/stock.engine';
-import { createStocktake, postStocktake } from '../modules/inventory/stocktake.service';
 import {
+  cancelTransfer,
   confirmTransfer,
   createTransfer,
   receiveTransfer,
   shipTransfer,
 } from '../modules/inventory/transfer.service';
+import { cancelStocktake, createStocktake, postStocktake } from '../modules/inventory/stocktake.service';
 import { createPurchaseReturn, receivePurchase } from '../modules/purchase/purchase.inbound';
 import {
+  cancelOrder as cancelPurchaseOrder,
   confirmOrder as confirmPurchaseOrder,
   createOrder as createPurchaseOrder,
 } from '../modules/purchase/purchase.service';
 import { createSalesReturn, shipSales } from '../modules/sales/sales.outbound';
 import {
+  cancelOrder as cancelSalesOrder,
   confirmOrder as confirmSalesOrder,
   createOrder as createSalesOrder,
 } from '../modules/sales/sales.service';
@@ -48,6 +51,7 @@ const BUSINESS_TABLES = [
   'stock_alert_rule',
   'stock_transaction',
   'stock_balance',
+  'sys_holiday',
   // 替代料：必须先于 item / warehouse 删除。这两张表对 item 有外键且未声明级联，
   // 若漏在清空清单外，`seed --reset` 会在删 item 时报 FOREIGN KEY 约束失败。
   'item_substitute_log',
@@ -154,107 +158,194 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
     const now = new Date().toISOString();
 
     // ---- 基础资料：物料分类 ----
+    // 覆盖：普通分类、树形子分类（parent_id 非空）、已停用分类（is_active=0）
     const categoryIds: Record<string, number> = {};
     const insertCategory = db.prepare(
-      `INSERT INTO item_category (code, name, is_active, created_at, updated_at)
-       VALUES (?, ?, 1, ?, ?)`,
+      `INSERT INTO item_category (code, name, parent_id, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const categories: [string, string][] = [
-      ['CAT-FG', '成品'],
-      ['CAT-SF', '半成品'],
-      ['CAT-RM', '原材料'],
-      ['CAT-PK', '包装物'],
+    const categories: [string, string, number | null, 0 | 1][] = [
+      ['CAT-FG', '成品', null, 1],
+      ['CAT-SF', '半成品', null, 1],
+      ['CAT-RM', '原材料', null, 1],
+      ['CAT-PK', '包装物', null, 1],
+      // 演示分类树：电子料挂在原材料之下，物料可挂到子分类
+      ['CAT-RM-EL', '电子料', null, 1], // parent 稍后回填
+      // 演示停用分类：停用后不再出现在新建物料的下拉里，但历史物料仍引用它
+      ['CAT-OLD', '历史分类（已停用）', null, 0],
     ];
-    for (const [code, name] of categories) {
-      categoryIds[code] = Number(insertCategory.run(code, name, now, now).lastInsertRowid);
+    for (const [code, name, parentId, isActive] of categories) {
+      categoryIds[code] = Number(
+        insertCategory.run(code, name, parentId, isActive, now, now).lastInsertRowid,
+      );
     }
+    // 回填 CAT-RM-EL 的父分类，形成两级分类树
+    db.prepare('UPDATE item_category SET parent_id = ? WHERE id = ?').run(
+      categoryIds['CAT-RM'],
+      categoryIds['CAT-RM-EL'],
+    );
 
     // ---- 基础资料：物料（inspection_required=1 → 采购入库落 qc） ----
+    // 覆盖：需质检/免检、启用/停用、批次管理、序列号管理、挂子分类、挂停用分类
     const itemIds: Record<string, number> = {};
     const insertItem = db.prepare(
       `INSERT INTO item
          (code, name, base_unit, category_id, is_active, qty_precision,
           inspection_required, batch_managed, serial_managed, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, 0, ?, 0, 0, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     );
-    const items: [string, string, string, string, number][] = [
-      ['FG-1001', '智能网关 A', 'EA', 'CAT-FG', 0],
-      ['FG-1002', '智能网关 B', 'EA', 'CAT-FG', 0],
-      ['SF-2001', '主控板组件', 'EA', 'CAT-SF', 0],
-      ['RM-3001', '主控芯片', 'EA', 'CAT-RM', 1],
-      ['RM-3002', '铝合金外壳', 'EA', 'CAT-RM', 0],
-      ['RM-3003', '锂离子电芯', 'EA', 'CAT-RM', 1],
-      ['RM-3004', '7 寸显示屏', 'EA', 'CAT-RM', 0],
-      ['PK-4001', '彩盒', 'EA', 'CAT-PK', 0],
-      ['PK-4002', '说明书', 'EA', 'CAT-PK', 0],
+    const items: [string, string, string, string, number, number, number, number][] = [
+      ['FG-1001', '智能网关 A', 'EA', 'CAT-FG', 0, 0, 0, 1],
+      ['FG-1002', '智能网关 B', 'EA', 'CAT-FG', 0, 0, 0, 1],
+      // 序列号管理：整机按序列号追踪（仅作标记，库存维度仍是 物料 × 仓库 × 状态）
+      ['FG-1003', '智能网关 C（序列号管理）', 'EA', 'CAT-FG', 0, 0, 1, 1],
+      ['SF-2001', '主控板组件', 'EA', 'CAT-SF', 0, 0, 0, 1],
+      ['RM-3001', '主控芯片', 'EA', 'CAT-RM-EL', 1, 0, 0, 1],
+      ['RM-3002', '铝合金外壳', 'EA', 'CAT-RM', 0, 0, 0, 1],
+      ['RM-3003', '锂离子电芯', 'EA', 'CAT-RM-EL', 1, 0, 0, 1],
+      ['RM-3004', '7 寸显示屏', 'EA', 'CAT-RM-EL', 0, 0, 0, 1],
+      // 替代料专用物料：同功能不同来源/型号，成对演示替代关系
+      ['RM-3005', '主控芯片（国产替代）', 'EA', 'CAT-RM-EL', 1, 0, 0, 1],
+      ['RM-3006', '7 寸显示屏（备用型号）', 'EA', 'CAT-RM-EL', 0, 0, 0, 1],
+      ['RM-3007', '锂离子电芯（备用供应商）', 'EA', 'CAT-RM-EL', 1, 0, 0, 1],
+      // 批次管理：传感器模组按批次追踪
+      ['RM-3008', '传感器模组（批次管理）', 'EA', 'CAT-RM-EL', 1, 1, 0, 1],
+      ['PK-4001', '彩盒', 'EA', 'CAT-PK', 0, 0, 0, 1],
+      ['PK-4002', '说明书', 'EA', 'CAT-PK', 0, 0, 0, 1],
+      ['PK-4003', '彩盒（环保材料）', 'EA', 'CAT-PK', 0, 0, 0, 1],
+      // 演示已停用物料 + 挂在已停用分类下：停用后不可再用于新单据，但历史数据仍可查询
+      ['IT-9001', '旧型号外壳（已停用）', 'EA', 'CAT-OLD', 0, 0, 0, 0],
     ];
-    for (const [code, name, unit, category, inspection] of items) {
+    for (const [code, name, unit, category, inspection, batch, serial, isActive] of items) {
       itemIds[code] = Number(
-        insertItem.run(code, name, unit, categoryIds[category], inspection, now, now).lastInsertRowid,
+        insertItem
+          .run(code, name, unit, categoryIds[category], isActive, inspection, batch, serial, now, now)
+          .lastInsertRowid,
       );
     }
 
     // ---- 基础资料：工厂 / 仓库 ----
+    // 覆盖三种仓库类型（plant / warehouse / port）与停用仓库
     const warehouseIds: Record<string, number> = {};
     const insertWarehouse = db.prepare(
       `INSERT INTO warehouse (code, name, type, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, 1, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const warehouses: [string, string, string][] = [
-      ['PLANT-01', '总装厂', 'plant'],
-      ['WH-01', '原料仓', 'warehouse'],
-      ['WH-02', '成品仓', 'warehouse'],
-      ['PORT-01', '港口仓', 'port'],
+    const warehouses: [string, string, string, 0 | 1][] = [
+      ['PLANT-01', '总装厂', 'plant', 1],
+      ['WH-01', '原料仓', 'warehouse', 1],
+      ['WH-02', '成品仓', 'warehouse', 1],
+      ['PORT-01', '港口仓', 'port', 1],
+      // 停用仓：不再出现在单据的可选仓库里，但历史单据仍引用它
+      ['WH-03', '退货暂存仓（已停用）', 'warehouse', 0],
     ];
-    for (const [code, name, type] of warehouses) {
-      warehouseIds[code] = Number(insertWarehouse.run(code, name, type, now, now).lastInsertRowid);
-    }
-
-    // ---- 基础资料：往来单位 ----
-    const partnerIds: Record<string, number> = {};
-    const insertPartner = db.prepare(
-      `INSERT INTO partner (code, name, type, contact, phone, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-    );
-    const partners: [string, string, string, string][] = [
-      ['SU-1001', '华芯电子', 'supplier', '王工'],
-      ['SU-1002', '精密结构件', 'supplier', '李经理'],
-      ['SU-1003', '新能源电池', 'supplier', '赵工'],
-      ['CU-2001', '华东经销', 'customer', '陈总'],
-      ['CU-2002', '深圳代理', 'customer', '周经理'],
-    ];
-    for (const [code, name, type, contact] of partners) {
-      partnerIds[code] = Number(
-        insertPartner.run(code, name, type, contact, null, now, now).lastInsertRowid,
+    for (const [code, name, type, isActive] of warehouses) {
+      warehouseIds[code] = Number(
+        insertWarehouse.run(code, name, type, isActive, now, now).lastInsertRowid,
       );
     }
 
-    // ---- 基础资料：需客户认证的客户关联 ----
-    db.prepare(
-      `INSERT INTO item_customer_certification (item_id, customer_id, certified_at)
-       VALUES (?, ?, ?)`,
-    ).run(itemIds['FG-1001'], partnerIds['CU-2001'], dateOffset(-60));
+    // ---- 基础资料：往来单位 ----
+    // 覆盖三种类型（customer / supplier / both）与停用单位
+    const partnerIds: Record<string, number> = {};
+    const insertPartner = db.prepare(
+      `INSERT INTO partner (code, name, type, contact, phone, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const partners: [string, string, string, string, 0 | 1][] = [
+      ['SU-1001', '华芯电子', 'supplier', '王工', 1],
+      ['SU-1002', '精密结构件', 'supplier', '李经理', 1],
+      ['SU-1003', '新能源电池', 'supplier', '赵工', 1],
+      // both：既供货又采购（演示同一伙伴可承担两种角色）
+      ['SU-1004', '联创电子（购销双向）', 'both', '孙主管', 1],
+      ['CU-2001', '华东经销', 'customer', '陈总', 1],
+      ['CU-2002', '深圳代理', 'customer', '周经理', 1],
+      // 停用客户：不能再开新单，但历史单据仍可查询
+      ['CU-2003', '老客户（已停用）', 'customer', '吴经理', 0],
+    ];
+    for (const [code, name, type, contact, isActive] of partners) {
+      partnerIds[code] = Number(
+        insertPartner.run(code, name, type, contact, null, isActive, now, now).lastInsertRowid,
+      );
+    }
 
     // ---- 基础资料：替代料（P10） ----
-    // 演示「销售出库替代」：智能网关 B 可顶替智能网关 A 发货，需先对该客户完成认证（正向认证，default-deny）。
-    // 故意只配 1 条关系、且尚无替代执行记录，使「替代料调用 / 呆滞」报表能演示「从未使用 → 呆滞」。
-    db.prepare(
+    // 覆盖目标：三种场景（销售出库 / BOM 备料 / 采购建议）× 三种策略（按比例 / 整批全量 / 手工指定）
+    // × 各种专属度（全仓通用、仓专属、父件专属）× 各种生效状态（生效中、未生效、已过期、已停用）
+    // × 非 1:1 比例（2:3 会触发向上取整并在告警里给出换算过程）。
+    const insertSubstitute = db.prepare(
       `INSERT INTO item_substitute
          (main_item_id, sub_item_id, parent_item_id, warehouse_id, priority, ratio_num, ratio_den,
           scene, strategy, cross_warehouse, effective_from, effective_to, is_active, remark, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, 1, 1, 1, 'sales_out', 'proportion', 0, ?, NULL, 1, ?, ?, ?)`,
-    ).run(
-      itemIds['FG-1001'],
-      itemIds['FG-1002'],
-      dateOffset(-90),
-      '演示：同系列网关可互替发货（1:1，全仓通用）',
-      now,
-      now,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
     );
-    db.prepare(
-      `INSERT INTO item_customer_certification (item_id, customer_id, certified_at)
-       VALUES (?, ?, ?)`,
-    ).run(itemIds['FG-1002'], partnerIds['CU-2001'], dateOffset(-30));
+    // cross_warehouse 一律 0：跨仓替代未实现，造 1 会让演示看起来支持不存在的能力
+    const substitutes: {
+      main: string;
+      sub: string;
+      parent?: string;
+      warehouse?: string;
+      priority?: number;
+      ratio?: [number, number];
+      scene: string;
+      strategy: string;
+      from?: string;
+      to?: string;
+      active?: 0 | 1;
+      remark: string;
+    }[] = [
+      // —— 销售出库：成品替代（本次演示会真实执行一次，写 item_substitute_log）——
+      { main: 'FG-1001', sub: 'FG-1002', scene: 'sales_out', strategy: 'proportion', from: dateOffset(-90), remark: '同系列网关可互替发货（1:1，全仓通用）' },
+      { main: 'FG-1001', sub: 'FG-1002', warehouse: 'WH-02', scene: 'sales_out', strategy: 'proportion', from: dateOffset(-90), remark: '成品仓专属规则：比全仓通用那条更专属，命中时优先使用' },
+      // —— BOM 备料：非 1:1 比例 ——
+      { main: 'RM-3001', sub: 'RM-3005', ratio: [2, 3], scene: 'bom_plan', strategy: 'proportion', from: dateOffset(-60), remark: '国产芯片替代进口（替代比例 2:3，会触发向上取整告警）' },
+      { main: 'RM-3001', sub: 'RM-3005', parent: 'SF-2001', ratio: [1, 1], scene: 'bom_plan', strategy: 'proportion', from: dateOffset(-60), remark: '仅用于「主控板组件」这个父件的专属规则（比通用规则更专属）' },
+      { main: 'RM-3001', sub: 'RM-3008', priority: 2, scene: 'bom_plan', strategy: 'proportion', from: dateOffset(-60), remark: '第二顺位替代：第一顺位不足时继续兜底' },
+      // —— 采购建议 ——
+      { main: 'RM-3001', sub: 'RM-3005', scene: 'purchase_hint', strategy: 'proportion', from: dateOffset(-60), remark: '采购建议场景：缺料时可改买国产替代' },
+      // —— 整批全量——不做混用 ——
+      { main: 'RM-3004', sub: 'RM-3006', scene: 'bom_plan', strategy: 'whole_batch', from: dateOffset(-45), remark: '显示屏备用型号：整批全量，不做混用' },
+      { main: 'RM-3004', sub: 'RM-3006', warehouse: 'WH-01', scene: 'bom_plan', strategy: 'whole_batch', from: dateOffset(-45), remark: '原料仓专属：在 WH-01 试算时优先于全仓通用规则' },
+      // —— 手工指定 ——
+      { main: 'RM-3003', sub: 'RM-3007', scene: 'bom_plan', strategy: 'manual', from: dateOffset(-30), remark: '电芯备用供应商：必须手工指定，不自动兜底' },
+      // —— 停用 ——
+      { main: 'PK-4001', sub: 'PK-4003', scene: 'bom_plan', strategy: 'proportion', from: dateOffset(-30), active: 0, remark: '已停用：试算时应出现在「跳过原因」里而不是被静默忽略' },
+      // —— 已过期 ——
+      { main: 'PK-4001', sub: 'PK-4003', scene: 'sales_out', strategy: 'proportion', from: dateOffset(-120), to: dateOffset(-10), remark: '已过期：演示 out_of_validity 跳过原因' },
+      // —— 未生效 ——
+      { main: 'RM-3001', sub: 'RM-3005', scene: 'sales_out', strategy: 'proportion', from: dateOffset(30), remark: '尚未生效：演示 out_of_validity（生效期在未来）' },
+    ];
+    for (const rule of substitutes) {
+      insertSubstitute.run(
+        itemIds[rule.main],
+        itemIds[rule.sub],
+        rule.parent ? itemIds[rule.parent] : null,
+        rule.warehouse ? warehouseIds[rule.warehouse] : null,
+        rule.priority ?? 1,
+        rule.ratio?.[0] ?? 1,
+        rule.ratio?.[1] ?? 1,
+        rule.scene,
+        rule.strategy,
+        rule.from ?? null,
+        rule.to ?? null,
+        rule.active ?? 1,
+        rule.remark,
+        now,
+        now,
+      );
+    }
+
+    // ---- 基础资料：客户认证（正向认证，default-deny；只约束「替代」动作） ----
+    // 覆盖：长期有效、即将过期、已过期
+    const insertCertification = db.prepare(
+      `INSERT INTO item_customer_certification (item_id, customer_id, certified_at, expire_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    insertCertification.run(itemIds['FG-1001'], partnerIds['CU-2001'], dateOffset(-60), null);
+    insertCertification.run(itemIds['FG-1002'], partnerIds['CU-2001'], dateOffset(-30), null);
+    // 对另一客户已过期 → 演示 customer_cert_expired
+    insertCertification.run(itemIds['FG-1002'], partnerIds['CU-2002'], dateOffset(-200), dateOffset(-1));
+    // 未认证的组合（CU-2002 对 FG-1001）故意不建，演示 customer_not_certified
 
     // ---- 基础资料：BOM（多版本 + 多层） ----
     const insertBom = db.prepare(
@@ -407,6 +498,27 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       null,
     );
 
+    // PO-E：已取消（演示 cancelled 状态：取消会把未入库量回填到表体 cancelled_qty）
+    const poE = createPurchaseOrder(
+      {
+        supplier_id: partnerIds['SU-1002'],
+        order_date: dateOffset(-7),
+        remark: '演示：已取消采购单',
+        items: [
+          {
+            product_id: itemIds['RM-3002'],
+            warehouse_id: warehouseIds['WH-01'],
+            quantity: 60,
+            unit_price: 860,
+            promised_date: dateOffset(5),
+          },
+        ],
+      },
+      null,
+    );
+    confirmPurchaseOrder(poE.id);
+    cancelPurchaseOrder(poE.id);
+
     // ---- 销售单 ----
     // SO-A：全部出库
     const soA = createSalesOrder(
@@ -523,6 +635,27 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       null,
     );
 
+    // SO-E：已取消（演示 cancelled 状态：取消会把未出库量回填到表体 cancelled_qty）
+    const soE = createSalesOrder(
+      {
+        customer_id: partnerIds['CU-2001'],
+        order_date: dateOffset(-6),
+        remark: '演示：已取消销售单',
+        items: [
+          {
+            product_id: itemIds['FG-1002'],
+            warehouse_id: warehouseIds['WH-02'],
+            quantity: 8,
+            unit_price: 12100,
+            due_date: dateOffset(3),
+          },
+        ],
+      },
+      null,
+    );
+    confirmSalesOrder(soE.id);
+    cancelSalesOrder(soE.id);
+
     // ---- 调拨单 ----
     // TR-A：WH-02 → PORT-01，已收货（演示港口仓默认不计入库存口径）
     const trA = createTransfer(
@@ -553,7 +686,47 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
     confirmTransfer(trB.id);
     shipTransfer(trB.id, isoOffset(-1));
 
-    // ---- 盘点单：WH-02 成品仓，FG-1001 实盘 = 账面 − 2，当日过账 ----
+    // TR-C：草稿（未确认，不占用任何库存）
+    createTransfer(
+      {
+        from_warehouse_id: warehouseIds['WH-01'],
+        to_warehouse_id: warehouseIds['WH-02'],
+        order_date: dateOffset(-1),
+        remark: '演示：草稿调拨单',
+        items: [{ product_id: itemIds['RM-3002'], quantity: 30 }],
+      },
+      null,
+    );
+
+    // TR-D：已确认未发货（已确认但还没出库，库存未变）
+    const trD = createTransfer(
+      {
+        from_warehouse_id: warehouseIds['WH-02'],
+        to_warehouse_id: warehouseIds['WH-01'],
+        order_date: dateOffset(-2),
+        remark: '演示：已确认待发货调拨单',
+        items: [{ product_id: itemIds['FG-1002'], quantity: 3 }],
+      },
+      null,
+    );
+    confirmTransfer(trD.id);
+
+    // TR-E：已取消
+    const trE = createTransfer(
+      {
+        from_warehouse_id: warehouseIds['WH-01'],
+        to_warehouse_id: warehouseIds['WH-02'],
+        order_date: dateOffset(-5),
+        remark: '演示：已取消调拨单',
+        items: [{ product_id: itemIds['RM-3003'], quantity: 40 }],
+      },
+      null,
+    );
+    confirmTransfer(trE.id);
+    cancelTransfer(trE.id);
+
+    // ---- 盘点单 ----
+    // ST-A：WH-02 成品仓，FG-1001 实盘 = 账面 − 2，已过账
     const bookQty = readBalanceByStatus(db, itemIds['FG-1001'], warehouseIds['WH-02']).available;
     const stocktake = createStocktake(
       {
@@ -571,6 +744,51 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
     );
     postStocktake(stocktake.id, isoOffset(-3));
 
+    // ST-B：草稿（未过账，不影响库存）
+    createStocktake(
+      {
+        warehouse_id: warehouseIds['WH-01'],
+        order_date: dateOffset(-1),
+        items: [
+          { product_id: itemIds['RM-3002'], stock_status: 'available', counted_qty: 100 },
+        ],
+      },
+      null,
+    );
+
+    // ST-C：已取消
+    const stocktakeC = createStocktake(
+      {
+        warehouse_id: warehouseIds['WH-01'],
+        order_date: dateOffset(-4),
+        items: [
+          { product_id: itemIds['RM-3004'], stock_status: 'available', counted_qty: 10 },
+        ],
+      },
+      null,
+    );
+    cancelStocktake(stocktakeC.id);
+
+    // ST-D：覆盖 frozen / qc 两个状态桶的盘点（盘盈，过账即写 adjust 流水）
+    const frozenBook = readBalanceByStatus(db, itemIds['RM-3001'], warehouseIds['WH-01']).frozen;
+    const qcBook = readBalanceByStatus(db, itemIds['RM-3003'], warehouseIds['WH-01']).qc;
+    const stocktakeD = createStocktake(
+      {
+        warehouse_id: warehouseIds['WH-01'],
+        order_date: dateOffset(-1),
+        items: [
+          { product_id: itemIds['RM-3001'], stock_status: 'frozen', counted_qty: frozenBook },
+          {
+            product_id: itemIds['RM-3003'],
+            stock_status: 'qc',
+            counted_qty: Math.max(qcBook - 3, 0),
+          },
+        ],
+      },
+      null,
+    );
+    postStocktake(stocktakeD.id, isoOffset(-1));
+
     // ---- 库存状态：WH-01 的 RM-3001 冻结 20（演示 frozen 桶） ----
     changeStockStatus({
       productId: itemIds['RM-3001'],
@@ -581,7 +799,92 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       occurredAt: isoOffset(-2),
     });
 
-    // ---- 预警规则（3 条当前触发） ----
+    // ---- 销售出库（放在业务流末尾）：主料不足时用替代料兜底 ----
+    // 这两单是**唯一**会写 item_substitute_log 的路径，因此放在最后执行：
+    // 前面的期初、采购、销售、调拨、盘点已经把主料库存抽到低位，此处的缺口才是真实的。
+    // 需求量不写死，而是按「当前可用 + 有上界的缺口」计算，避免前面数量调整后本段失效。
+    const fg1001Available = readBalanceByStatus(db, itemIds['FG-1001'], warehouseIds['WH-02']).available;
+    const fg1002Available = readBalanceByStatus(db, itemIds['FG-1002'], warehouseIds['WH-02']).available;
+    const desiredGap = Math.max(3, Math.min(10, Math.floor(fg1001Available / 5)));
+    const substituteGap = Math.min(desiredGap, fg1002Available);
+
+    // SO-F：自动兜底（allowSubstitute=true）——主料优先，缺口由替代料按优先级补齐
+    if (fg1001Available > 0 && substituteGap > 0) {
+      const soF = createSalesOrder(
+        {
+          customer_id: partnerIds['CU-2001'],
+          order_date: dateOffset(-3),
+          remark: '演示：主料不足时由替代料补缺口出库',
+          items: [
+            {
+              product_id: itemIds['FG-1001'],
+              warehouse_id: warehouseIds['WH-02'],
+              quantity: fg1001Available + substituteGap,
+              unit_price: 15100,
+              due_date: dateOffset(1),
+            },
+          ],
+        },
+        null,
+      );
+      confirmSalesOrder(soF.id);
+      const soFLine = db
+        .prepare('SELECT id FROM sales_order_item WHERE order_id = ? ORDER BY line_no')
+        .get(soF.id) as { id: number };
+      shipSales(
+        {
+          orderId: soF.id,
+          lines: [
+            {
+              orderItemId: soFLine.id,
+              quantity: fg1001Available + substituteGap,
+              allowSubstitute: true,
+            },
+          ],
+          occurredAt: isoOffset(-3),
+        },
+        null,
+      );
+
+      // SO-G：手工指定替代料（substituteItemId → manual 策略：主料仍优先，缺口只用指定料）
+      const fg1002Left = readBalanceByStatus(db, itemIds['FG-1002'], warehouseIds['WH-02']).available;
+      const manualQty = 5;
+      if (fg1002Left >= manualQty) {
+        const soG = createSalesOrder(
+          {
+            customer_id: partnerIds['CU-2001'],
+            order_date: dateOffset(-2),
+            remark: '演示：手工指定替代料出库',
+            items: [
+              {
+                product_id: itemIds['FG-1001'],
+                warehouse_id: warehouseIds['WH-02'],
+                quantity: manualQty,
+                unit_price: 15150,
+                due_date: dateOffset(4),
+              },
+            ],
+          },
+          null,
+        );
+        confirmSalesOrder(soG.id);
+        const soGLine = db
+          .prepare('SELECT id FROM sales_order_item WHERE order_id = ? ORDER BY line_no')
+          .get(soG.id) as { id: number };
+        shipSales(
+          {
+            orderId: soG.id,
+            lines: [
+              { orderItemId: soGLine.id, quantity: manualQty, substituteItemId: itemIds['FG-1002'] },
+            ],
+            occurredAt: isoOffset(-2),
+          },
+          null,
+        );
+      }
+    }
+
+    // ---- 预警规则（覆盖：低于下限、同时设上下限、仓库专属、已停用） ----
     createAlertRule({ item_id: itemIds['RM-3001'], min_qty: 200 }); // 对照：充足不触发
     createAlertRule({ item_id: itemIds['RM-3003'], min_qty: 1000 }); // below_min
     createAlertRule({ item_id: itemIds['PK-4001'], min_qty: 2000 }); // below_min
@@ -591,6 +894,26 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       min_qty: 80,
       max_qty: 300,
     }); // below_min
+    // 下限为 0：等价于「只关心是否超过上限」，演示「设了上限但当前未超限」
+    createAlertRule({ item_id: itemIds['FG-1002'], min_qty: 0, max_qty: 5000 });
+    // 已停用规则：存在但不应参与预警计算
+    createAlertRule({ item_id: itemIds['RM-3002'], min_qty: 9999, is_active: false });
+
+    // ---- 节假日 / 调休日历（kind: holiday 放假 / workday 补班） ----
+    // 当前没有业务逻辑读取该表，此处提供数据是为了让日历相关的后续功能有可用的样例。
+    const insertHoliday = db.prepare(
+      `INSERT INTO sys_holiday (holiday_date, name, kind) VALUES (?, ?, ?)`,
+    );
+    insertHoliday.run(dateOffset(-40), '国庆节', 'holiday');
+    insertHoliday.run(dateOffset(-33), '国庆调休补班', 'workday');
+    insertHoliday.run(dateOffset(20), '元旦', 'holiday');
+
+    // ---- 演示账号：已停用（登录即被拒，用于验证「停用即时生效」） ----
+    db.prepare(
+      `INSERT INTO sys_user (dingtalk_user_id, name, is_active, created_at, updated_at)
+       SELECT ?, ?, 0, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM sys_user WHERE dingtalk_user_id = ?)`,
+    ).run('mock:离职员工', '离职员工（已停用）', now, now, 'mock:离职员工');
 
     // ---- 写入标记 ----
     db.prepare(

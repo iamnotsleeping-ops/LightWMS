@@ -68,6 +68,17 @@ function countTable(table: string): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
 
+/** 演示数据里的物料条数：多处断言引用，避免每次扩充演示数据都要改一堆魔法数字 */
+const SEED_ITEMS = 16;
+
+/** 某列在演示数据里实际出现的取值（升序），用于断言枚举覆盖 */
+function coveredValues(table: string, column: string): (string | number)[] {
+  const rows = db
+    .prepare(`SELECT DISTINCT "${column}" AS v FROM "${table}" WHERE "${column}" IS NOT NULL ORDER BY v`)
+    .all() as { v: string | number }[];
+  return rows.map((row) => row.v);
+}
+
 function itemIdOf(code: string): number {
   return (db.prepare('SELECT id FROM item WHERE code = ?').get(code) as { id: number }).id;
 }
@@ -93,14 +104,14 @@ describe('P9 种子 · 幂等与重建', () => {
     const first = seedDemoData();
     expect(first.applied).toBe(true);
     expect(first.skipped).toBe(false);
-    expect(first.counts.item).toBe(9);
+    expect(first.counts.item).toBe(SEED_ITEMS);
 
     const snapshot = { ...first.counts };
     const second = seedDemoData();
     expect(second.applied).toBe(false);
     expect(second.skipped).toBe(true);
     expect(second.counts).toEqual(snapshot);
-    expect(countTable('item')).toBe(9);
+    expect(countTable('item')).toBe(SEED_ITEMS);
   });
 
   it('--reset 清空业务数据后重建，且保留 sys_*（角色 / 权限）', () => {
@@ -115,11 +126,11 @@ describe('P9 种子 · 幂等与重建', () => {
       new Date().toISOString(),
       new Date().toISOString(),
     );
-    expect(countTable('item')).toBe(10);
+    expect(countTable('item')).toBe(SEED_ITEMS + 1);
 
     const result = seedDemoData({ reset: true });
     expect(result.applied).toBe(true);
-    expect(countTable('item')).toBe(9); // 临时物料与旧数据一并被清掉
+    expect(countTable('item')).toBe(SEED_ITEMS); // 临时物料与旧数据一并被清掉
     expect(countTable('sys_role')).toBe(rolesBefore);
     expect(countTable('sys_permission')).toBe(permsBefore);
   });
@@ -131,16 +142,28 @@ describe('P9 验收 · 全链路', () => {
   });
 
   it('主数据（P1/P6）：分类 / 物料 / 仓库 / 往来 / BOM 计数正确，BOM 多版本按 as_of 生效', async () => {
-    expect(countTable('item_category')).toBe(4);
-    expect(countTable('item')).toBe(9);
-    expect(countTable('warehouse')).toBe(4);
-    expect(countTable('partner')).toBe(5);
+    expect(countTable('item_category')).toBe(6);
+    expect(countTable('item')).toBe(16);
+    expect(countTable('warehouse')).toBe(5);
+    expect(countTable('partner')).toBe(7);
     expect(countTable('bom')).toBe(10);
-    // FG-1001（原有）+ FG-1002（P10 替代料演示所需的客户认证）
-    expect(countTable('item_customer_certification')).toBe(2);
-    // P10 替代料：1 条演示关系（FG-1002 替代 FG-1001，销售出库场景）；尚无替代执行记录
-    expect(countTable('item_substitute')).toBe(1);
-    expect(countTable('item_substitute_log')).toBe(0);
+    // 认证：FG-1001/CU-2001（长期）、FG-1002/CU-2001（长期）、FG-1002/CU-2002（已过期）
+    expect(countTable('item_customer_certification')).toBe(3);
+    // P10 替代料：12 条关系覆盖三种场景 × 三种策略 × 通用/仓专属/父件专属 × 生效/未生效/已过期/已停用
+    expect(countTable('item_substitute')).toBe(12);
+    // 替代执行追溯：SO-F（主料+替代料混用）与 SO-G（整行由替代料满足）各写 1 条
+    expect(countTable('item_substitute_log')).toBe(2);
+
+    // 演示数据必须覆盖到枚举全集（除刻意排除项），否则前端各页面的「其它情况」看不到
+    expect(coveredValues('item_substitute', 'scene')).toEqual(['bom_plan', 'purchase_hint', 'sales_out']);
+    expect(coveredValues('item_substitute', 'strategy')).toEqual([
+      'manual',
+      'proportion',
+      'whole_batch',
+    ]);
+    expect(coveredValues('item_substitute', 'is_active')).toEqual([0, 1]);
+    expect(coveredValues('sys_holiday', 'kind')).toEqual(['holiday', 'workday']);
+    expect(coveredValues('partner', 'type')).toEqual(['both', 'customer', 'supplier']);
 
     // 2026-03-15 落在 FG-1001 生效窗口（2026-01-01 ~ 2026-06-30），RM-3004 用量为 1
     const v1 = (await authGet('/api/masterdata/boms?asOf=2026-03-15&parentItemId=' + itemIdOf('FG-1001'))).json();
@@ -183,7 +206,7 @@ describe('P9 验收 · 全链路', () => {
         q: number;
       }
     ).q;
-    expect(qc).toBe(450); // RM-3001 300(qc) + RM-3003 150(qc)
+    expect(qc).toBe(447); // RM-3001 300(qc) + RM-3003 150(qc) − 盘点盘亏 3（ST-D 盘 qc 桶）
 
     // 每个 (物料, 仓库, 状态) 的余额 = 该维度流水 direction×quantity 之和
     const mismatch = db
@@ -199,18 +222,21 @@ describe('P9 验收 · 全链路', () => {
       )
       .get() as { n: number };
     expect(mismatch.n).toBe(0);
-    expect(countTable('stock_transaction')).toBe(21);
+    expect(countTable('stock_transaction')).toBe(25);
   });
 
-  it('采购（P3）：四单状态齐全，在途 750，含采购退货', () => {
-    expect(countTable('purchase_order')).toBe(4);
+  it('采购（P3）：五种状态齐全（含已取消），在途 750，含采购退货', () => {
+    expect(countTable('purchase_order')).toBe(5);
     expect(countTable('purchase_return')).toBe(1);
 
-    const byStatus = db
-      .prepare('SELECT status, COUNT(*) AS n FROM purchase_order GROUP BY status')
-      .all() as { status: string; n: number }[];
-    const map = Object.fromEntries(byStatus.map((row) => [row.status, row.n]));
-    expect(map).toMatchObject({ received: 1, partial: 1, confirmed: 1, draft: 1 });
+    // 断言「枚举齐全」而不是「恰好几单」：后者每次扩充演示数据都会碎，且不表达真实意图
+    expect(coveredValues('purchase_order', 'status')).toEqual([
+      'cancelled',
+      'confirmed',
+      'draft',
+      'partial',
+      'received',
+    ]);
 
     const inTransit = (
       db
@@ -230,15 +256,17 @@ describe('P9 验收 · 全链路', () => {
     expect(returnTx[0].direction).toBe(-1);
   });
 
-  it('销售（P4）：四单状态齐全，预留 55，含销售退货', () => {
-    expect(countTable('sales_order')).toBe(4);
+  it('销售（P4）：五种状态齐全（含已取消），预留 55，含销售退货与替代出库', () => {
+    expect(countTable('sales_order')).toBe(7);
     expect(countTable('sales_return')).toBe(1);
 
-    const byStatus = db
-      .prepare('SELECT status, COUNT(*) AS n FROM sales_order GROUP BY status')
-      .all() as { status: string; n: number }[];
-    const map = Object.fromEntries(byStatus.map((row) => [row.status, row.n]));
-    expect(map).toMatchObject({ shipped: 1, partial: 1, confirmed: 1, draft: 1 });
+    expect(coveredValues('sales_order', 'status')).toEqual([
+      'cancelled',
+      'confirmed',
+      'draft',
+      'partial',
+      'shipped',
+    ]);
 
     const reserved = (
       db
@@ -258,15 +286,15 @@ describe('P9 验收 · 全链路', () => {
     expect(returnTx[0].direction).toBe(1);
   });
 
-  it('调拨 / 盘点 / 预警（P5）：调拨在途 50、盘点盘亏 2、当前预警 3 条', () => {
-    expect(countTable('transfer_order')).toBe(2);
-    const transferStatuses = db
-      .prepare('SELECT status, COUNT(*) AS n FROM transfer_order GROUP BY status')
-      .all() as { status: string; n: number }[];
-    expect(Object.fromEntries(transferStatuses.map((r) => [r.status, r.n]))).toMatchObject({
-      received: 1,
-      shipped: 1,
-    });
+  it('调拨 / 盘点 / 预警（P5）：五种调拨状态齐全、调拨在途 50、盘点盘亏 2、当前预警 3 条', () => {
+    expect(countTable('transfer_order')).toBe(5);
+    expect(coveredValues('transfer_order', 'status')).toEqual([
+      'cancelled',
+      'confirmed',
+      'draft',
+      'received',
+      'shipped',
+    ]);
     const transferInTransit = (
       db
         .prepare('SELECT COALESCE(SUM(shipped_qty - received_qty), 0) AS q FROM transfer_order_item')
@@ -274,12 +302,18 @@ describe('P9 验收 · 全链路', () => {
     ).q;
     expect(transferInTransit).toBe(50);
 
-    expect(countTable('stocktake_order')).toBe(1);
+    expect(countTable('stocktake_order')).toBe(4);
+    expect(coveredValues('stocktake_order', 'status')).toEqual(['cancelled', 'draft', 'posted']);
+    // 盘点表体覆盖三个状态桶（available / frozen / qc），且盘亏 -2 的那行仍在
+    expect(coveredValues('stocktake_order_item', 'stock_status')).toEqual([
+      'available',
+      'frozen',
+      'qc',
+    ]);
     const diff = db
-      .prepare('SELECT diff_qty FROM stocktake_order_item ORDER BY line_no')
+      .prepare("SELECT diff_qty FROM stocktake_order_item WHERE stock_status = 'available'")
       .all() as { diff_qty: number }[];
-    expect(diff).toHaveLength(1);
-    expect(diff[0].diff_qty).toBe(-2);
+    expect(diff.some((row) => row.diff_qty === -2)).toBe(true);
 
     const alerts = queryAlerts({});
     expect(alerts).toHaveLength(3);
@@ -349,7 +383,7 @@ describe('P9 验收 · 全链路', () => {
     const body = (await authGet('/api/dashboard/overview')).json();
     expect(body.code).toBe(0);
 
-    expect(body.data.kpi.item_count).toBe(9);
+    expect(body.data.kpi.item_count).toBe(SEED_ITEMS - 1); // KPI 只统计启用物料（演示数据里有 1 个停用物料）
     expect(body.data.kpi.in_transit_qty).toBe(800); // 采购 750 + 调拨 50
     expect(body.data.kpi.alert_count).toBe(3);
     expect(body.data.kpi.on_hand_qty).toBeGreaterThan(0);
@@ -384,7 +418,7 @@ describe('P9 验收 · 全链路', () => {
       expect(res.statusCode, url).toBe(200);
       expect(res.json().code, url).toBe(0);
     }
-    expect((await app.inject({ method: 'GET', url: '/api/v1/warehouses' })).json().data).toHaveLength(4);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/warehouses' })).json().data).toHaveLength(5);
 
     const csv = await app.inject({ method: 'GET', url: '/api/v1/items?format=csv' });
     expect(csv.headers['content-type']).toContain('text/csv');
@@ -404,5 +438,81 @@ describe('P9 验收 · 全链路', () => {
     await app.inject({ method: 'GET', url: '/api/v1/inventory' });
     expect(countTable('stock_transaction')).toBe(before);
     expect(countTable('stock_balance')).toBe(balancesBefore);
+  });
+});
+/**
+ * 演示数据的枚举覆盖度检查。
+ *
+ * 目的：演示库要能让人看到「各种情况」，所以每个 `CHECK (col IN (...))` 枚举都应在种子数据里
+ * 至少出现一次。这里**从 schema 自动推导枚举**而不是手写清单——新增一个枚举值后，本测试会
+ * 直接失败，逼着种子数据或下面的排除表跟上；手写清单则会静默漏掉新值。
+ *
+ * 确实无法造数据的枚举（功能未实现 / 表未启用）必须在 EXCLUDED 里显式登记并写明理由，
+ * 不允许用「跳过不检查」的方式蒙过去。
+ */
+describe('P9 演示数据 · 枚举覆盖度', () => {
+  beforeEach(() => {
+    seedDemoData();
+  });
+
+  /** 刻意不造数据的枚举取值：造了会让演示看起来支持并不存在的能力 */
+  const EXCLUDED: { table: string; column: string; reason: string }[] = [
+    {
+      table: 'item_substitute',
+      column: 'cross_warehouse',
+      reason: '跨仓替代未实现，该字段恒为 0（预留字段）',
+    },
+    {
+      table: 'item_substitute_log',
+      column: 'biz_type',
+      reason: '仅销售出库会写该表，purchase_in / plan 无写入路径',
+    },
+    {
+      table: 'export_task',
+      column: 'status',
+      reason: '导出任务表未启用（报表走同步 CSV 导出）',
+    },
+  ];
+
+  it('每个 CHECK 枚举在演示数据里都有取值（除显式登记的例外）', () => {
+    const excludedKeys = new Set(EXCLUDED.map((item) => `${item.table}.${item.column}`));
+    const ddlRows = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as { name: string; sql: string | null }[];
+
+    const gaps: string[] = [];
+    let checkedColumns = 0;
+
+    for (const row of ddlRows) {
+      const ddl = row.sql ?? '';
+      for (const match of ddl.matchAll(/(\w+)\s+IN\s*\(([^)]*)\)/g)) {
+        const column = match[1];
+        const values = match[2]
+          .split(',')
+          .map((value) => value.trim().replace(/^'|'$/g, ''))
+          .filter((value) => /^[\w-]+$/.test(value));
+        if (values.length === 0) continue; // 非字面量枚举（如 IN (SELECT ...)）
+        if (excludedKeys.has(`${row.name}.${column}`)) continue;
+
+        checkedColumns += 1;
+        const present = new Set(
+          coveredValues(row.name, column).map((value) => String(value)),
+        );
+        for (const value of values) {
+          if (!present.has(value)) gaps.push(`${row.name}.${column} 缺 ${value}`);
+        }
+      }
+    }
+
+    // 断言确实扫到了足够多的枚举列，避免正则失效后本测试变成空测
+    expect(checkedColumns).toBeGreaterThan(15);
+    expect(gaps).toEqual([]);
+  });
+
+  it('登记为「刻意排除」的枚举确实仍然没有被造数据（排除表不会过期）', () => {
+    for (const item of EXCLUDED) {
+      const present = coveredValues(item.table, item.column).map((value) => String(value));
+      expect(present.length, `${item.table}.${item.column}：${item.reason}`).toBeLessThanOrEqual(1);
+    }
   });
 });
