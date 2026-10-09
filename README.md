@@ -89,6 +89,8 @@ light-erp/
 
 ## 核心表关系
 
+> **逐表字段字典见 [docs/数据表字典.md](docs/数据表字典.md)**：33 张表的字段、类型、约束、索引、外键、非显然字段说明与跨表不变量，由 `pnpm --filter @light-erp/server schema-doc` 从库结构生成（不手写，故不会随迁移漂移）。本节只给全局关系与口径。
+
 ```text
 基础资料层            业务单据层                    库存层
 item_category         purchase_order          ┌  stock_transaction  流水（只增不改）

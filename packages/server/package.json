@@ -9,7 +9,8 @@
     "migrate": "tsx src/db/migrate-cli.ts",
     "seed": "tsx src/db/seed-cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "schema-doc": "tsx scripts/generate-schema-doc.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
