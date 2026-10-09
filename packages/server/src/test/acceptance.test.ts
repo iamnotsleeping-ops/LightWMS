@@ -222,7 +222,7 @@ describe('P9 验收 · 全链路', () => {
       )
       .get() as { n: number };
     expect(mismatch.n).toBe(0);
-    expect(countTable('stock_transaction')).toBe(25);
+    expect(countTable('stock_transaction')).toBe(32);
   });
 
   it('采购（P3）：五种状态齐全（含已取消），在途 750，含采购退货', () => {

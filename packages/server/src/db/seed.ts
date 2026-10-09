@@ -370,6 +370,7 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
     }
 
     // ---- 期初库存（adjust，29 天前） ----
+    // 注意：替代料必须自己有库存，否则「需求试算」永远只能报缺口，演示不出替代效果。
     const openingAt = isoOffset(-29);
     const openings: [string, string, number, number][] = [
       ['WH-01', 'RM-3001', 500, 1200],
@@ -380,6 +381,16 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       ['WH-01', 'PK-4002', 2000, 10],
       ['WH-02', 'FG-1001', 120, 9000],
       ['WH-02', 'FG-1002', 60, 7000],
+      // 替代料专用物料的期初库存（有货才演示得出「用替代料顶缺口」）
+      ['WH-01', 'RM-3005', 220, 950],
+      ['WH-01', 'RM-3006', 150, 3200],
+      ['WH-01', 'RM-3007', 300, 2300],
+      ['WH-01', 'RM-3008', 180, 1500],
+      ['WH-01', 'PK-4003', 600, 95],
+      // 序列号管理整机
+      ['WH-02', 'FG-1003', 25, 9800],
+      // 已停用物料的遗留库存：停用不等于清零，历史库存仍要能查到
+      ['WH-01', 'IT-9001', 12, 280],
     ];
     for (const [warehouse, item, quantity, unitCost] of openings) {
       postMovement({
