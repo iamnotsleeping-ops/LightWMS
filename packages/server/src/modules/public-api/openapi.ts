@@ -349,6 +349,13 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-5 历史采购订单（提前期，整单口径）',
         'x-returns': '采购历史行（提前期为整单口径）+ page（分页）',
+        description:
+          '一行的粒度是「采购订单行」，但**提前期字段是整单口径**：`lead_time_days` / `promised_lead_time_days` / `on_time` ' +
+          '由订单级聚合得出（实际到货取该单 `purchase_in` 流水的 MIN / MAX 时刻，承诺取该单**所有行** `promised_date` 的最大值），' +
+          '因此**同一订单的所有行这三个值必然相同**，按行累加会重复计数——消费方需先按订单去重。' +
+          '响应里真正的**行级**字段只有 `line_no` / `item_code` / `quantity` / `received_qty` / `unit_price` / `promised_date`。' +
+          '⚠ 库存流水**不含行号**（`biz_id` 只到订单），所以**实际到货时刻没有行级粒度**：不要用本接口计算「料号级提前期」，' +
+          '那需要账本带行号（尚未实现）。',
         parameters: [
           codeParam('supplier_code', 'SU-01'),
           codeParam('item_code', 'RM-001'),
@@ -391,6 +398,14 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-5b 供应商提前期聚合',
         'x-returns': '提前期聚合对象（不分页）',
+        description:
+          '`avg_lead_time_days` = 下单（`order_date`）→ 该单**最后实际到货日**的整单均值；' +
+          '`avg_promised_lead_time_days` = 下单 → 该单**最晚承诺日** `MAX(promised_date)` 的整单均值（是**承诺**，不是实际）；' +
+          '`on_time_rate` = 「最后到货日 ≤ 最晚承诺日」的**订单占比**（整单口径）。' +
+          '⚠ **样本只包含已有入库记录的订单**（内连接采购入库流水）：尚未到货的订单不计入，' +
+          '因此上述均值与准时率对「长期迟到、至今未到货」的供应商**系统性偏乐观**，报告中应据此标注。' +
+          '本接口**不设最小样本量、不做任何门禁**，只原样返回样本规模（`order_count` / `line_count` / `received_line_count`），' +
+          '阈值由消费方自定。',
         parameters: [
           {
             name: 'code',

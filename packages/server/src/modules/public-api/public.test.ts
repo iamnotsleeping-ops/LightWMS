@@ -761,6 +761,27 @@ describe('OpenAPI 文档', () => {
    * 缺 summary（IF-x 编号 + 标题）或 x-returns 的接口会让页面出现残缺行——
    * 与其在页面上兜底，不如让漏写在测试阶段就失败。
    */
+  /**
+   * 提前期口径是下游对账的依赖项（专门问过"整单口径还是行级"），
+   * 所以把结论钉在文档里，防止有人日后顺手把 description 删掉、又回到靠口头对齐。
+   */
+  it('IF-5 / IF-5b 的 description 写明提前期口径（整单口径、样本偏乐观）', async () => {
+    const body = await app.inject({ method: 'GET', url: '/api/v1/openapi.json' });
+    const doc = body.json() as {
+      paths: Record<string, { get: { description?: string } }>;
+    };
+    const if5 = doc.paths['/purchase-history'].get.description ?? '';
+    const if5b = doc.paths['/suppliers/{code}/lead-time-stats'].get.description ?? '';
+    // IF-5：整单口径 + 同一订单各行相同 + 行级字段清单 + 无行级到货时刻
+    expect(if5).toContain('整单口径');
+    expect(if5).toContain('必然相同');
+    expect(if5).toContain('不含行号');
+    // IF-5b：承诺口径 vs 实际口径 + 样本只含已到货（偏乐观）+ 不设最小样本量
+    expect(if5b).toContain('承诺');
+    expect(if5b).toContain('偏乐观');
+    expect(if5b).toContain('不设最小样本量');
+  });
+
   it('每个对外接口都带 IF-x 编号的 summary 与 x-returns（数据接口页据此渲染）', async () => {
     const doc = (await get('/api/v1/openapi.json')).json();
     type Doc = { get: { summary?: string; 'x-returns'?: string } };
