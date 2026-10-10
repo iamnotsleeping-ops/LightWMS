@@ -155,6 +155,28 @@ describe('P9 验收 · 全链路', () => {
     // 替代执行追溯：SO-F（主料+替代料混用）与 SO-G（整行由替代料满足）各写 1 条
     expect(countTable('item_substitute_log')).toBe(2);
 
+    // 「行级提前期」的可判定样例：整单口径把同一张单所有行的到货摊在一起，
+    // **单行订单区分不出来**（两者恰好相等，下游曾因此复现不出判据）。
+    // 这里断言演示数据里确实存在一条"多行、逐行到货日不同"的采购单，
+    // 且这些到货在账本里带 biz_line_id（迁移 0010 的行级归属）。
+    const lineReceipts = db
+      .prepare(
+        `SELECT poi.order_id, poi.id AS line_id, MAX(substr(t.occurred_at, 1, 10)) AS last_day
+           FROM purchase_order_item poi
+           JOIN stock_transaction t
+             ON t.biz_line_id = poi.id AND t.biz_type = 'purchase_in'
+          GROUP BY poi.id`,
+      )
+      .all() as { order_id: number; line_id: number; last_day: string }[];
+    const daysByOrder = new Map<number, string[]>();
+    for (const row of lineReceipts) {
+      daysByOrder.set(row.order_id, [...(daysByOrder.get(row.order_id) ?? []), row.last_day]);
+    }
+    const discriminable = [...daysByOrder.values()].filter(
+      (days) => days.length >= 2 && new Set(days).size >= 2,
+    );
+    expect(discriminable.length).toBeGreaterThan(0);
+
     // 演示数据必须覆盖到枚举全集（除刻意排除项），否则前端各页面的「其它情况」看不到
     expect(coveredValues('item_substitute', 'scene')).toEqual(['bom_plan', 'purchase_hint', 'sales_out']);
     expect(coveredValues('item_substitute', 'strategy')).toEqual([
@@ -223,11 +245,11 @@ describe('P9 验收 · 全链路', () => {
       )
       .get() as { n: number };
     expect(mismatch.n).toBe(0);
-    expect(countTable('stock_transaction')).toBe(32);
+    expect(countTable('stock_transaction')).toBe(34);
   });
 
   it('采购（P3）：五种状态齐全（含已取消），在途 750，含采购退货', () => {
-    expect(countTable('purchase_order')).toBe(5);
+    expect(countTable('purchase_order')).toBe(6);
     expect(countTable('purchase_return')).toBe(1);
 
     // 断言「枚举齐全」而不是「恰好几单」：后者每次扩充演示数据都会碎，且不表达真实意图

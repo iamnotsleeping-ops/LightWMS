@@ -533,6 +533,50 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
     confirmPurchaseOrder(poE.id);
     cancelPurchaseOrder(poE.id);
 
+    // PO-F：**多行、逐行不同到货日** —— 「行级提前期」的可判定样例。
+    //   单行订单区分不出整单口径与行级口径（两者恰好相等，下游因此复现不出来），
+    //   所以必须有一张多行单：整单字段两行相同，行级字段逐行不同。
+    //   刻意用**不参与任何替代关系**的物料（PK-4002 说明书），避免动到替代/BOM 演示。
+    //   供应商刻意选 SU-1002（此前没有任何入库记录）：既补齐它的提前期统计，
+    //   又不会扰动 SU-1001 那条被验收断言的「6 天 / 准时率 1」。
+    const poF = createPurchaseOrder(
+      {
+        supplier_id: partnerIds['SU-1002'],
+        order_date: dateOffset(-20),
+        remark: '演示：同物料两行分别到货（行级提前期判据）',
+        items: [
+          {
+            product_id: itemIds['PK-4002'],
+            warehouse_id: warehouseIds['WH-01'],
+            quantity: 30,
+            unit_price: 10,
+            promised_date: dateOffset(-12),
+          },
+          {
+            product_id: itemIds['PK-4002'],
+            warehouse_id: warehouseIds['WH-01'],
+            quantity: 40,
+            unit_price: 10,
+            promised_date: dateOffset(-14),
+          },
+        ],
+      },
+      null,
+    );
+    confirmPurchaseOrder(poF.id);
+    const poFLines = db
+      .prepare('SELECT id FROM purchase_order_item WHERE order_id = ? ORDER BY line_no')
+      .all(poF.id) as { id: number }[];
+    // 第 1 行 -15 到货（早于自己的承诺 -12 → 准时）；第 2 行 -8 到货（晚于自己的承诺 -14 → 迟到）
+    receivePurchase(
+      { orderId: poF.id, lines: [{ orderItemId: poFLines[0].id, quantity: 30 }], occurredAt: isoOffset(-15) },
+      null,
+    );
+    receivePurchase(
+      { orderId: poF.id, lines: [{ orderItemId: poFLines[1].id, quantity: 40 }], occurredAt: isoOffset(-8) },
+      null,
+    );
+
     // ---- 销售单 ----
     // SO-A：全部出库
     const soA = createSalesOrder(
