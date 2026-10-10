@@ -14,7 +14,7 @@
       :closable="false"
       show-icon
       title="接口约定"
-      description="前缀 /api/v1，全部 GET、无需鉴权，支持 format=json|csv。历史时点用 as_of（YYYY-MM-DD 或 ISO 8601）；在途 / 预占等单据派生量历史不可还原，返回 null 并在 _warnings 中提示。分页 page 默认 1、page_size 默认 100（上限 1000）。"
+      description="前缀 /api/v1，全部 GET；除 openapi.json（契约文档）外所有数据接口都要求请求头 X-API-Key（缺失或无效返回 401），支持 format=json|csv。历史时点用 as_of（YYYY-MM-DD 或 ISO 8601）；在途 / 预占等单据派生量历史不可还原，返回 null 并在 _warnings 中提示。分页 page 默认 1、page_size 默认 100（上限 1000）。"
     />
 
     <el-alert
@@ -120,7 +120,9 @@ function buildCurl(path: string, params: ParamSpec[]): string {
     })
     .filter((pair): pair is string => pair !== null && !pair.endsWith('='));
   const url = `${apiBase}${path.replace('{itemCode}', 'FG-1001').replace('{code}', 'SU-1001')}`;
-  return `GET ${url}${query.length > 0 ? `?${query.join('&')}` : ''}`;
+  const queryString = query.length > 0 ? `?${query.join('&')}` : '';
+  // 数据接口都要 API Key：示例里一并给出，否则复制出去就是 401
+  return `GET ${url}${queryString}\n  -H "X-API-Key: $PUBLIC_API_KEY"`;
 }
 
 onMounted(async () => {
@@ -161,7 +163,9 @@ onMounted(async () => {
 });
 
 const csvExample = `GET ${apiBase}/items?format=csv
-GET ${apiBase}/inventory?as_of=2026-03-15&format=csv`;
+  -H "X-API-Key: $PUBLIC_API_KEY"
+GET ${apiBase}/inventory?as_of=2026-03-15&format=csv
+  -H "X-API-Key: $PUBLIC_API_KEY"`;
 </script>
 
 <style scoped>

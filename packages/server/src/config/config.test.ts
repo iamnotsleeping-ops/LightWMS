@@ -12,6 +12,7 @@ function production(overrides: Partial<StartupConfigInput> = {}): StartupConfigI
       appSecret: 'secret',
       redirectUri: 'https://erp.example.com/api/auth/dingtalk/callback',
     },
+    publicApiKey: 'f'.repeat(64),
     ...overrides,
   };
 }
@@ -86,6 +87,27 @@ describe('生产启动配置自检', () => {
     expect(problems.join('\n')).toContain('DINGTALK_APP_KEY');
     expect(problems.join('\n')).toContain('DINGTALK_APP_SECRET');
     expect(problems.join('\n')).toContain('DINGTALK_REDIRECT_URI');
+  });
+
+  it('生产环境未配置 PUBLIC_API_KEY 被拒（否则 /api/v1 商业数据公网裸奔）', () => {
+    const problems = validateStartupConfig(production({ publicApiKey: '' }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('PUBLIC_API_KEY 未配置');
+    expect(problems[0]).toContain('/api/v1');
+
+    // 空串与「没传」等价
+    expect(validateStartupConfig(production({ publicApiKey: undefined }))).toHaveLength(1);
+  });
+
+  it('生产环境 PUBLIC_API_KEY 过短被拒（拒绝弱 Key）', () => {
+    const problems = validateStartupConfig(production({ publicApiKey: 'short-key' }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('PUBLIC_API_KEY 过短');
+  });
+
+  it('非生产环境不要求 PUBLIC_API_KEY（本地开发/测试放行）', () => {
+    expect(validateStartupConfig(production({ env: 'development', publicApiKey: '' }))).toEqual([]);
+    expect(validateStartupConfig(production({ env: 'test', publicApiKey: '' }))).toEqual([]);
   });
 
   it('mock 与默认密钥同时踩中时问题全部列出，不早退', () => {

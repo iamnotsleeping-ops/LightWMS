@@ -157,14 +157,14 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 | IF-4 | `GET /api/v1/in-transit?as_of=` | 在途 / 采购订单 |
 | IF-5 | `GET /api/v1/purchase-history` | 历史采购订单（提前期） |
 | IF-5b | `GET /api/v1/suppliers/{code}/lead-time-stats` | 供应商提前期聚合 |
-| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态）。**未指定 `status` 时缺省只返回未结需求（`confirmed` / `partial`）**，与内部 `reserved` 口径一致；如需 `draft` / `cancelled` 须显式传入 |
+| IF-6 | `GET /api/v1/sales-orders` | 销售订单行（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / **售价 `unit_price`（整数分）** / 要求交期 / 订单状态）。**未指定 `status` 时缺省只返回未结需求（`confirmed` / `partial`）**，与内部 `reserved` 口径一致；如需 `draft` / `cancelled` 须显式传入 |
 | IF-7 | `GET /api/v1/warehouses` | 工厂 / 仓库主数据 |
 | IF-8 | `GET /api/v1/substitutes?main_item_code=&warehouse_code=&scene=&as_of=` | 替代关系清单（按优先级，含适用仓 / 父件 / 比例 / 生效期），供下游自行净算 |
 | IF-9 | `GET /api/v1/substitution-plan?main_item_code=&warehouse_code=&required_qty=&scene=&customer_code=&strategy=&manual_item_codes=&as_of=` | **给定需求直接返回替代分配建议**（分配明细 / 已覆盖 / 缺口 / 跳过原因 / 告警）。只读无副作用 |
 
 ### 约定
 
-- **只读公开**：全部 GET，不挂鉴权钩子，供下游计划 / 推演引擎直接消费。
+- **只读 + API Key**：全部 GET。除 `GET /api/v1/openapi.json`（契约文档，不含业务数据，内部「数据接口」页面也从它渲染）外，**所有数据接口都要求请求头 `X-API-Key`**，缺失或无效返回 `401`。原因：这些接口含库存、采购单价、供应商提前期、销售订单行与客户认证等**商业数据**，不能公开。密钥由服务端 `PUBLIC_API_KEY` 配置（`openssl rand -hex 32`；**生产未配置则启动自检拒绝启动**；轮换 = 改配置 + 重启），通过线下渠道交付给消费方。
 - **统一信封**：`{ code, message, data, page?, _warnings }`，`code=0` 成功；`_warnings` 为字符串数组，列举本次结果的口径近似与截断提示。
 - **参数命名**：对外接口查询参数一律「蛇形命名」（`snake_case`），与内部业务接口的驼峰命名刻意区分。
 - **分页**：`page` 默认 1，`page_size` 默认 100，上限 1000；分页接口在信封中带 `page`（`page/pageSize/total`）。`/boms`、`/boms/{itemCode}/explode`、`/warehouses` 不分页。

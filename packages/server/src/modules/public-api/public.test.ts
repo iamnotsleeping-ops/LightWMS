@@ -462,7 +462,7 @@ describe('IF-5b 供应商提前期聚合', () => {
 });
 
 describe('IF-6 销售订单行', () => {
-  it('返回行级字段（订单号/行号/订单日期/客户编码/物料编码/仓库编码/数量/已出库量/未出库量/要求交期/状态）', async () => {
+  it('返回行级字段（含售价 unit_price；订单号/行号/订单日期/客户编码/物料编码/仓库编码/数量/已出库量/未出库量/要求交期/状态）', async () => {
     makeConfirmedSales(25);
 
     const body = (await get('/api/v1/sales-orders')).json();
@@ -477,10 +477,12 @@ describe('IF-6 销售订单行', () => {
       quantity: 25,
       shipped_qty: 0,
       unshipped: 25, // quantity − shipped_qty − cancelled_qty
+      // 售价（整数分）：下游「售价损失」口径的前提，与 IF-4/IF-5 的采购单价是两回事
+      unit_price: 800,
       due_date: '2026-01-20',
       status: 'confirmed',
     });
-    // 客户已脱敏为编码：不暴露客户名称与金额
+    // 客户仍脱敏为编码：不暴露客户名称；订单金额仍不暴露（要的话用 unit_price 自算）
     expect(body.data[0]).not.toHaveProperty('customer_name');
     expect(body.data[0]).not.toHaveProperty('total_amount');
   });

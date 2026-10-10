@@ -63,6 +63,21 @@ const keywordParam = {
  * 统一信封样例：`data` 传入该接口的真实响应片段（字段名与类型与线上一致），
  * 便于下游直接按样例生成客户端 / 做断言。`paged=true` 时补上 `page`（仅分页接口有）。
  */
+const UNAUTHORIZED_RESPONSE = {
+  description: '缺少或无效的 API Key（请求头 `X-API-Key`）',
+  content: {
+    'application/json': {
+      schema: { $ref: '#/components/schemas/Envelope' },
+      example: {
+        code: 401,
+        message: '缺少或无效的 API Key：请在请求头携带 X-API-Key',
+        data: null,
+        _warnings: [],
+      },
+    },
+  },
+};
+
 const envelopeResponse = (data: unknown, paged = false) => ({
   description: '统一信封；format=csv 时返回 text/csv（不套信封）',
   headers: {
@@ -91,7 +106,10 @@ export const openapiDocument = {
     title: '轻量级进销存系统 · 对外只读数据接口',
     version: '1.0.0',
     description:
-      '供下游供应链计划与推演引擎消费的只读接口。全部 GET、无需鉴权、支持 format=json|csv。' +
+      '供下游供应链计划与推演引擎消费的只读接口。全部 GET，支持 format=json|csv。' +
+      '【鉴权】除本文件 /openapi.json 外，所有数据接口都要求请求头 `X-API-Key`（缺失或无效返回 401）——' +
+      '这些接口含库存、采购单价、供应商提前期、销售订单行与客户认证等商业数据，不对外公开。' +
+      'Key 由接口方签发；轮换时改服务端配置并重启。' +
       '历史时点（as_of）一律从 stock_transaction 按 occurred_at <= as_of 重算；' +
       '在途 / 预占等单据派生量历史不可还原，返回 null 并在 _warnings 中提示。' +
       '替代料接口分两层：/substitutes 只给「配了哪些替代关系」，/substitution-plan 给分配建议（只读试算，不写任何单据或库存）；' +
@@ -100,6 +118,14 @@ export const openapiDocument = {
   servers: [{ url: '/api/v1' }],
   tags: [{ name: 'public', description: '对外只读接口' }],
   components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'X-API-Key',
+        description: '对外只读数据接口的访问密钥，由接口方签发（请求头 X-API-Key）',
+      },
+    },
     schemas: {
       PageInfo: {
         type: 'object',
@@ -123,6 +149,8 @@ export const openapiDocument = {
       },
     },
   },
+  /** 全局默认：所有数据接口都需要 API Key（/openapi.json 本身不在 paths 里，故不受影响） */
+  security: [{ ApiKeyAuth: [] }],
   paths: {
     '/items': {
       get: {
@@ -144,6 +172,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -181,6 +210,7 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse([
             {
               id: 2,
@@ -223,6 +253,7 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse({
             as_of: '2026-10-08',
             root: {
@@ -272,6 +303,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -318,6 +350,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -371,6 +404,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -425,6 +459,7 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse({
             supplier_code: 'SU-1001',
             supplier_name: '华芯电子',
@@ -447,9 +482,12 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-6 销售订单行',
         'x-returns':
-          '销售订单行数组（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 状态）+ page',
+          '销售订单行数组（订单号 / 行号 / 订单日期 / 客户编码 / 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / **售价 unit_price（整数分）** / 要求交期 / 状态）+ page',
         description:
           '一行 = 销售单的一行物料。字段：订单号 / 行号 / 订单日期 / 客户（脱敏为客户编码）/ 物料编码 / 仓库编码 / 数量 / 已出库量 / 未出库量 / 要求交期 / 订单状态。' +
+          '【售价】`unit_price` 是**销售单价（整数分，不含税概念——本系统无税模型）**；' +
+          '它是「售价损失」口径的输入，注意与 IF-4 / IF-5 的采购 `unit_price` **不是同一个量**，不要混用。' +
+          '订单总金额仍不暴露（需要时用 `unit_price × quantity` 自算）。' +
           '未出库量 = quantity − shipped_qty − cancelled_qty。' +
           '未指定 status 时缺省只返回未结需求（confirmed / partial），与库存口径的 reserved 一致；' +
           '如需包含 draft / cancelled 请显式传 status。',
@@ -475,6 +513,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -519,6 +558,7 @@ export const openapiDocument = {
           FORMAT_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse([
             {
               code: 'PLANT-01',
@@ -566,6 +606,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse(
             [
               {
@@ -677,6 +718,7 @@ export const openapiDocument = {
           PAGE_SIZE_PARAM,
         ],
         responses: {
+          '401': UNAUTHORIZED_RESPONSE,
           '200': envelopeResponse({
             as_of: '2026-10-08',
             main_item_code: 'RM-3001',

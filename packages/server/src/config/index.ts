@@ -68,6 +68,17 @@ export const config = {
    * 仅为「受控网络内的一次性部署」留出通路——打开后启动会有显著安全告警。
    */
   allowInsecureAuth: bool(process.env.ALLOW_INSECURE_AUTH, false),
+  /**
+   * 对外只读接口（`/api/v1`）的 API Key（`PUBLIC_API_KEY`）。
+   *
+   * `/api/v1` 暴露库存、采购单价、供应商提前期、销售订单行、客户认证等**商业数据**，
+   * 无鉴权就等于公网裸奔。配了 Key 后所有 `/api/v1` **数据**接口都要求请求头 `X-API-Key`
+   * （`/api/v1/openapi.json` 是契约文档、不含数据，保持公开）。
+   *
+   * 空值只在**非生产**环境放行（本地开发/测试便利）；生产环境为空会在启动自检里被拦下。
+   * 轮换 = 改这个值 + 重启。
+   */
+  publicApiKey: process.env.PUBLIC_API_KEY ?? '',
 } as const;
 
 export type AppConfig = typeof config;
@@ -82,6 +93,8 @@ export interface StartupConfigInput {
   allowInsecureAuth?: boolean;
   /** mock 通道是否允许自助建号并自动授予 sys_admin（MOCK_AUTO_ADMIN，默认 true） */
   mockAutoAdmin?: boolean;
+  /** 对外只读接口的 API Key（PUBLIC_API_KEY）；空串表示未配置 */
+  publicApiKey?: string;
 }
 
 /**
@@ -118,6 +131,17 @@ export function validateStartupConfig(input: StartupConfigInput): string[] {
     if (!input.dingtalk.appKey) problems.push('DINGTALK_APP_KEY 未配置');
     if (!input.dingtalk.appSecret) problems.push('DINGTALK_APP_SECRET 未配置');
     if (!input.dingtalk.redirectUri) problems.push('DINGTALK_REDIRECT_URI 未配置');
+  }
+  // `/api/v1` 暴露库存、采购单价、供应商提前期、销售订单行、客户认证等商业数据，
+  // 生产环境没有 API Key 就等于公网裸奔——fail-fast，不给"忘了配"留后门。
+  const publicApiKey = input.publicApiKey ?? '';
+  if (publicApiKey === '') {
+    problems.push(
+      'PUBLIC_API_KEY 未配置：对外只读接口 /api/v1 会在无鉴权下公开库存、采购单价、' +
+        '供应商提前期、销售订单行等商业数据。请设置随机长字符串（可用 openssl rand -hex 32 生成）',
+    );
+  } else if (publicApiKey.length < 24) {
+    problems.push('PUBLIC_API_KEY 过短（至少 24 个字符），请用 openssl rand -hex 32 生成随机长串');
   }
   return problems;
 }
@@ -157,5 +181,6 @@ export function assertStartupConfig(): string[] {
     dingtalk: config.dingtalk,
     allowInsecureAuth: config.allowInsecureAuth,
     mockAutoAdmin: config.auth.mockAutoAdmin,
+    publicApiKey: config.publicApiKey,
   });
 }

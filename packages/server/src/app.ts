@@ -14,7 +14,15 @@ import { registerSystemRoutes } from './modules/system/routes';
 import { registerAuth } from './plugins/auth';
 import { registerErrorHandler } from './plugins/error-handler';
 
-export async function buildApp(): Promise<FastifyInstance> {
+export interface BuildAppOptions {
+  /**
+   * 覆盖对外只读接口的 API Key（默认取 `config.publicApiKey`）。
+   * 仅用于测试：生产/开发一律走环境变量。
+   */
+  publicApiKey?: string;
+}
+
+export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: config.env === 'development' ? 'info' : 'warn' },
   });
@@ -36,7 +44,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerInventoryRoutes(app);
   registerPurchaseRoutes(app);
   registerSalesRoutes(app);
-  registerPublicRoutes(app);
+  registerPublicRoutes(app, options.publicApiKey ?? config.publicApiKey);
   registerReportRoutes(app);
   registerDashboardRoutes(app);
 

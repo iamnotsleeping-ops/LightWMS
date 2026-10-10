@@ -582,7 +582,7 @@ export function listPublicSalesOrders(query: PublicSalesOrdersQuery): PublicPage
               i.code AS item_code, w.code AS warehouse_code,
               soi.quantity, soi.shipped_qty,
               soi.quantity - soi.shipped_qty - soi.cancelled_qty AS unshipped,
-              soi.due_date, so.status
+              soi.unit_price, soi.due_date, so.status
        ${base} ${clause} ORDER BY so.order_no, soi.line_no LIMIT ? OFFSET ?`,
     )
     .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];
