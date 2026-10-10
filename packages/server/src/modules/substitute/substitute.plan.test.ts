@@ -318,6 +318,88 @@ describe('替代料规划 · 三种策略', () => {
     ).toThrow(/RM-UNRELATED 不是主料 RM-001 在场景 sales_out 下的替代料/);
   });
 
+  /**
+   * 手工指定的边界（下游按这四条对账，必须有测试钉住，否则会像上次那样悄悄漂）：
+   *   404 / 400 = 「这个编码能不能进候选集合」= 输入问题（改请求才有用）
+   *   200 + skipped[reason] = 「关系成立、规则允许，但此刻给不出量」= 状态问题（换仓 / 等货 / 改数量）
+   * 即：规则层（停用 / 生效期 / 仓 / 父件 / 客户认证）不可用 → 400；数量层（库存）为零 → skipped[no_stock]。
+   */
+  it('手工指名「关系存在但已停用」的替代料 → 400（规则层不可用，不是静默跳过）', () => {
+    const sub = makeItem('RM-SUB-1');
+    stock(sub, 100);
+    relate(fx.itemId, sub, { isActive: 0 });
+
+    expect(() =>
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [sub] }),
+    ).toThrow(/不是主料 .* 下的替代料/);
+  });
+
+  it('手工指名「关系未生效」的替代料 → 400', () => {
+    const sub = makeItem('RM-SUB-1');
+    stock(sub, 100);
+    relate(fx.itemId, sub, { effectiveFrom: '2099-01-01' });
+
+    expect(() =>
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [sub] }),
+    ).toThrow(/不是主料 .* 下的替代料/);
+  });
+
+  it('手工指名「只配在别的仓库」的替代料 → 400', () => {
+    const sub = makeItem('RM-SUB-1');
+    stock(sub, 100, fx.portWarehouseId);
+    relate(fx.itemId, sub, { workspaceId: fx.portWarehouseId });
+
+    expect(() =>
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [sub] }),
+    ).toThrow(/不是主料 .* 下的替代料/);
+  });
+
+  it('手工指名「绑定别的父件」的替代料 → 400', () => {
+    const sub = makeItem('RM-SUB-1');
+    const otherParent = makeItem('FG-OTHER');
+    stock(sub, 100);
+    relate(fx.itemId, sub, { parentItemId: otherParent });
+
+    expect(() =>
+      plan({
+        mainItemId: fx.itemId,
+        requiredQty: 10,
+        strategy: 'manual',
+        parentItemId: undefined,
+        manualItemIds: [sub],
+      }),
+    ).toThrow(/不是主料 .* 下的替代料/);
+  });
+
+  it('手工指名「关系成立但该仓无库存」→ 200 + skipped[no_stock]（数量层不算输入错误）', () => {
+    const sub = makeItem('RM-SUB-1');
+    relate(fx.itemId, sub); // 关系有效，但该仓无库存
+
+    const result = plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [sub] });
+
+    expect(result.allocations).toEqual([]);
+    expect(result.gapQty).toBe(10);
+    expect(result.skipped).toContainEqual({ itemId: sub, itemCode: 'RM-SUB-1', reason: 'no_stock' });
+  });
+
+  it('手工清单里混入一项不可用 → 整体 400，能用的那项也不分配（不做部分执行）', () => {
+    const usable = makeItem('RM-SUB-1');
+    const disabled = makeItem('RM-SUB-2');
+    stock(usable, 100);
+    stock(disabled, 100);
+    relate(fx.itemId, usable, { priority: 1 });
+    relate(fx.itemId, disabled, { priority: 2, isActive: 0 });
+
+    expect(() =>
+      plan({
+        mainItemId: fx.itemId,
+        requiredQty: 10,
+        strategy: 'manual',
+        manualItemIds: [usable, disabled],
+      }),
+    ).toThrow(/不是主料 .* 下的替代料/);
+  });
+
   it('手工指名只配在别的场景的替代料 → 400（场景是硬分区，不是静默回落）', () => {
     const sub = makeItem('RM-SUB-1');
     stock(sub, 100);
