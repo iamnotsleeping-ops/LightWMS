@@ -83,6 +83,8 @@ export function receivePurchase(body: PurchaseInboundBody, _userId: number | nul
         bizType: 'purchase_in',
         bizId: order.id,
         bizNo: order.order_no,
+        // 行级归属：IF-5 的"该行首次/最后到货时刻"由它还原（整单口径会把同单其它行的迟到摊过来）
+        bizLineId: item.id,
         direction: 1,
         quantity: line.quantity,
         unitCost: item.unit_price,
@@ -215,6 +217,8 @@ export function createPurchaseReturn(body: PurchaseReturnBody, userId: number | 
         bizType: 'purchase_return',
         bizId: returnId,
         bizNo: returnNo,
+        // 退货归属到**被退的那条采购单行**，保持行级血缘
+        bizLineId: source.order_item_id,
         direction: -1,
         quantity: line.quantity,
       });

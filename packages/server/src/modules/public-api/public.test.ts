@@ -344,6 +344,99 @@ describe('IF-5 历史采购订单（提前期，整单口径）', () => {
   });
 });
 
+/**
+ * 行级口径（迁移 0010 给账本加了 biz_line_id）。
+ *
+ * 这组用例是**判别性**的：单行订单区分不出整单口径与行级口径（下游正是因此复现不出来），
+ * 必须造一张"两行、分别在不同日期到货"的订单——此时整单字段两行相同，行级字段逐行不同。
+ */
+describe('IF-5 提前期 · 行级口径（迁移 0010）', () => {
+  it('两行订单分别到货：整单字段两行相同，行级字段逐行不同', async () => {
+    const { id } = createPurchase(
+      {
+        supplier_id: fx.supplierId,
+        order_date: '2026-03-02',
+        items: [
+          {
+            product_id: fx.itemId,
+            warehouse_id: fx.warehouseId,
+            quantity: 10,
+            unit_price: 500,
+            promised_date: '2026-03-10',
+          },
+          {
+            product_id: fx.portItemId,
+            warehouse_id: fx.warehouseId,
+            quantity: 20,
+            unit_price: 700,
+            promised_date: '2026-03-20',
+          },
+        ],
+      },
+      null,
+    );
+    confirmPurchase(id);
+    const lines = db
+      .prepare('SELECT id FROM purchase_order_item WHERE order_id = ? ORDER BY line_no')
+      .all(id) as { id: number }[];
+    // 第 1 行 3-05 到货（早于自己的承诺 3-10）；第 2 行 3-25 到货（晚于自己的承诺 3-20）
+    receivePurchase(
+      {
+        orderId: id,
+        lines: [{ orderItemId: lines[0].id, quantity: 10 }],
+        occurredAt: '2026-03-05T00:00:00.000Z',
+      },
+      null,
+    );
+    receivePurchase(
+      {
+        orderId: id,
+        lines: [{ orderItemId: lines[1].id, quantity: 20 }],
+        occurredAt: '2026-03-25T00:00:00.000Z',
+      },
+      null,
+    );
+
+    const body = (await get('/api/v1/purchase-history')).json();
+    const rows = body.data as Record<string, unknown>[];
+    expect(rows).toHaveLength(2);
+
+    // 整单口径：两行都是「下单 → 整单最后到货 3-25」= 23 天，**区分不出哪一行迟**
+    expect(rows.map((row) => row.lead_time_days)).toEqual([23, 23]);
+    // 行级口径：逐行可区分 —— 这正是「料号级提前期」需要而整单口径给不了的
+    expect(rows.map((row) => row.line_lead_time_days)).toEqual([3, 23]);
+    expect(rows[0].line_last_received_at).toBe('2026-03-05T00:00:00.000Z');
+    expect(rows[1].line_last_received_at).toBe('2026-03-25T00:00:00.000Z');
+    // on_time 也是两套：整单按「最后到货 ≤ 整单最晚承诺(3-20)」→ 两行都 false；
+    // 行级按「该行最后到货 ≤ 该行自己的承诺」→ 第 1 行 true、第 2 行 false
+    expect(rows.map((row) => row.on_time)).toEqual([false, false]);
+    expect(rows.map((row) => row.line_on_time)).toEqual([true, false]);
+  });
+
+  it('没有 biz_line_id 的历史流水 → 行级字段为 null（不回填、不猜），整单字段照旧', async () => {
+    const { orderId, itemId } = makeConfirmedPurchase(40, '2026-01-01', '2026-01-10');
+    // 直接写一条"迁移前那样"的入库流水：有 biz_id、没有 biz_line_id
+    db.prepare(
+      `INSERT INTO stock_transaction
+         (product_id, warehouse_id, stock_status, biz_type, biz_id, biz_no, biz_line_id,
+          direction, quantity, unit_cost, occurred_at, created_at)
+       VALUES (?, ?, 'available', 'purchase_in', ?, 'PO-LEGACY', NULL, 1, 40, 500, ?, ?)`,
+    ).run(fx.itemId, fx.warehouseId, orderId, '2026-01-05T00:00:00.000Z', nowIso());
+    db.prepare('UPDATE purchase_order_item SET received_qty = 40 WHERE id = ?').run(itemId);
+
+    const body = (await get('/api/v1/purchase-history')).json();
+    const row = body.data[0] as Record<string, unknown>;
+    // 整单口径不受影响（按 biz_id 仍能还原）
+    expect(row.lead_time_days).toBe(4);
+    expect(row.last_received_at).toBe('2026-01-05T00:00:00.000Z');
+    // 行级：明确 null，而不是猜一个值
+    expect(row.line_first_received_at).toBeNull();
+    expect(row.line_last_received_at).toBeNull();
+    expect(row.line_lead_time_days).toBeNull();
+    expect(row.line_on_time).toBeNull();
+  });
+});
+
 describe('IF-5b 供应商提前期聚合', () => {
   it('聚合指标正确，供应商不存在返回 404', async () => {
     const { orderId, itemId } = makeConfirmedPurchase(40, '2026-01-01', '2026-01-10');
@@ -772,10 +865,12 @@ describe('OpenAPI 文档', () => {
     };
     const if5 = doc.paths['/purchase-history'].get.description ?? '';
     const if5b = doc.paths['/suppliers/{code}/lead-time-stats'].get.description ?? '';
-    // IF-5：整单口径 + 同一订单各行相同 + 行级字段清单 + 无行级到货时刻
+    // IF-5：两套口径并存 + 整单口径同一订单各行相同 + 行级字段与"可空=拿不到"的语义
     expect(if5).toContain('整单口径');
+    expect(if5).toContain('行级口径');
     expect(if5).toContain('必然相同');
-    expect(if5).toContain('不含行号');
+    expect(if5).toContain('line_lead_time_days');
+    expect(if5).toContain('拿不到');
     // IF-5b：承诺口径 vs 实际口径 + 样本只含已到货（偏乐观）+ 不设最小样本量
     expect(if5b).toContain('承诺');
     expect(if5b).toContain('偏乐观');

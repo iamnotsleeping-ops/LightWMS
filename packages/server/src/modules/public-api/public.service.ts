@@ -329,7 +329,8 @@ export function listPublicPurchaseHistory(query: PublicPurchaseHistoryQuery): Pu
     JOIN order_agg a ON a.order_id = o.id
     JOIN partner s ON s.id = o.supplier_id
     JOIN purchase_order_item i ON i.order_id = o.id
-    JOIN item p ON p.id = i.product_id`;
+    JOIN item p ON p.id = i.product_id
+    LEFT JOIN line_receipts lr ON lr.biz_line_id = i.id`;
 
   const { total } = db
     .prepare(`${RECEIPT_CTE} SELECT COUNT(*) AS total ${base} ${clause}`)
@@ -342,7 +343,8 @@ export function listPublicPurchaseHistory(query: PublicPurchaseHistoryQuery): Pu
               s.code AS supplier_code, s.name AS supplier_name,
               i.line_no, p.code AS item_code, p.name AS item_name,
               i.quantity, i.received_qty, i.unit_price, i.promised_date,
-              r.first_received_at, r.last_received_at, a.max_promised_date
+              r.first_received_at, r.last_received_at, a.max_promised_date,
+              lr.line_first_received_at, lr.line_last_received_at
        ${base} ${clause}
        ORDER BY o.order_date DESC, o.id DESC, i.line_no
        LIMIT ? OFFSET ?`,
@@ -352,6 +354,11 @@ export function listPublicPurchaseHistory(query: PublicPurchaseHistoryQuery): Pu
     first_received_at: string;
     last_received_at: string;
     max_promised_date: string;
+    /** 该**行**自己的承诺日（NOT NULL），line_on_time 与它比较 */
+    promised_date: string;
+    /** 行级（迁移 0010 起才有）：该采购单行自身流水的首次/最后到货时刻；存量或非采购入库为 null */
+    line_first_received_at: string | null;
+    line_last_received_at: string | null;
   })[];
 
   const list: Row[] = rows.map((row) => {
@@ -374,6 +381,18 @@ export function listPublicPurchaseHistory(query: PublicPurchaseHistoryQuery): Pu
       lead_time_days: daysBetween(row.order_date, lastDay),
       promised_lead_time_days: daysBetween(row.order_date, row.max_promised_date),
       on_time: lastDay <= row.max_promised_date,
+      // ---- 以下为**行级**口径（迁移 0010 起）：行没有行级到货数据时为 null（存量单不回溯）----
+      line_first_received_at: row.line_first_received_at,
+      line_last_received_at: row.line_last_received_at,
+      line_lead_time_days:
+        row.line_last_received_at === null
+          ? null
+          : daysBetween(row.order_date, businessDateOf(row.line_last_received_at)),
+      // 与整单 on_time 的区别：这里比的是**该行自己的** promised_date，不是整单最晚承诺日
+      line_on_time:
+        row.line_last_received_at === null
+          ? null
+          : businessDateOf(row.line_last_received_at) <= row.promised_date,
     };
   });
 

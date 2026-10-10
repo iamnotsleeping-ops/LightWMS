@@ -348,14 +348,19 @@ export const openapiDocument = {
       get: {
         tags: ['public'],
         summary: 'IF-5 历史采购订单（提前期，整单口径）',
-        'x-returns': '采购历史行（提前期为整单口径）+ page（分页）',
+        'x-returns': '采购历史行（**两套提前期口径并存**：整单口径 lead_time_days / promised_lead_time_days / on_time；' +
+          '行级口径 line_first_received_at / line_last_received_at / line_lead_time_days / line_on_time，行级字段可空）+ page（分页）',
         description:
-          '一行的粒度是「采购订单行」，但**提前期字段是整单口径**：`lead_time_days` / `promised_lead_time_days` / `on_time` ' +
-          '由订单级聚合得出（实际到货取该单 `purchase_in` 流水的 MIN / MAX 时刻，承诺取该单**所有行** `promised_date` 的最大值），' +
+          '一行的粒度是「采购订单行」。**两套提前期口径并存**，字段名已区分，不要混用：' +
+          '【整单口径】`lead_time_days` / `promised_lead_time_days` / `on_time` 由**订单级**聚合得出' +
+          '（实际到货取该单 `purchase_in` 流水的 MIN / MAX 时刻，承诺取该单**所有行** `promised_date` 的最大值），' +
           '因此**同一订单的所有行这三个值必然相同**，按行累加会重复计数——消费方需先按订单去重。' +
-          '响应里真正的**行级**字段只有 `line_no` / `item_code` / `quantity` / `received_qty` / `unit_price` / `promised_date`。' +
-          '⚠ 库存流水**不含行号**（`biz_id` 只到订单），所以**实际到货时刻没有行级粒度**：不要用本接口计算「料号级提前期」，' +
-          '那需要账本带行号（尚未实现）。',
+          '【行级口径】`line_first_received_at` / `line_last_received_at` / `line_lead_time_days` / `line_on_time` 按' +
+          '**单据行**（账本 `biz_line_id`）聚合；`line_on_time` 比的是**该行自己的** `promised_date`，而非整单最晚承诺日。' +
+          '⚠ 行级字段**可空**：仅**采购入库 / 采购退货**会写行号，故**存量行（迁移 0010 之前写入）**与' +
+          '销售出库 / 调拨 / 盘点等业务产生的流水取不到行号 → 返回 `null`，含义是「**拿不到**」而**不是 0**；' +
+          '我们不回填、不猜。需要「料号级提前期」时用行级口径，并对 `null` 做跳过处理。' +
+          '响应里其余**行级**字段为 `line_no` / `item_code` / `quantity` / `received_qty` / `unit_price` / `promised_date`。',
         parameters: [
           codeParam('supplier_code', 'SU-01'),
           codeParam('item_code', 'RM-001'),

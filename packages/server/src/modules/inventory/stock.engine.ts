@@ -10,6 +10,13 @@ export interface MovementInput {
   bizType: BizType;
   bizId?: number | null;
   bizNo?: string | null;
+  /**
+   * 业务**单据行**的 id（采购入库 = purchase_order_item.id）。
+   *
+   * 账本原先只有单据级归属，导致"实际到货时刻"只能按整单还原，做不到料号级提前期。
+   * 目前仅采购入库 / 采购退货填充；其它业务类型与**全部存量行**为 NULL（不回填、不猜）。
+   */
+  bizLineId?: number | null;
   /** 1 入库 / -1 出库；quantity 恒为正数 */
   direction: 1 | -1;
   quantity: number;
@@ -126,9 +133,9 @@ export function postMovement(input: MovementInput): number {
     const info = db
       .prepare(
         `INSERT INTO stock_transaction
-           (product_id, warehouse_id, stock_status, biz_type, biz_id, biz_no,
+           (product_id, warehouse_id, stock_status, biz_type, biz_id, biz_no, biz_line_id,
             direction, quantity, unit_cost, occurred_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.productId,
@@ -137,6 +144,7 @@ export function postMovement(input: MovementInput): number {
         input.bizType,
         input.bizId ?? null,
         input.bizNo ?? null,
+        input.bizLineId ?? null,
         input.direction,
         input.quantity,
         unitCost,
