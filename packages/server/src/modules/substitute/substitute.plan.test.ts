@@ -284,6 +284,55 @@ describe('替代料规划 · 三种策略', () => {
   it('手工指定缺少 manualItemIds → 400', () => {
     expect(() => plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual' })).toThrow(ApiError);
   });
+
+  it('手工指定缺少列表时的报错用对外参数名（不泄漏内部参数名 manualItemIds）', () => {
+    let message = '';
+    try {
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('manual_item_codes');
+    expect(message).not.toContain('manualItemIds');
+  });
+
+  it('手工指名主料自己 → 400（以前是静默无效：既不在 allocations 也不在 skipped）', () => {
+    const sub = makeItem('RM-SUB-1');
+    stock(sub, 100);
+    relate(fx.itemId, sub);
+
+    expect(() =>
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [fx.itemId] }),
+    ).toThrow(/不是主料 .* 在场景 .* 下的替代料/);
+  });
+
+  it('手工指名一个存在但与该主料无替代关系的物料 → 400', () => {
+    const sub = makeItem('RM-SUB-1');
+    const unrelated = makeItem('RM-UNRELATED');
+    stock(sub, 100);
+    stock(unrelated, 100);
+    relate(fx.itemId, sub);
+
+    expect(() =>
+      plan({ mainItemId: fx.itemId, requiredQty: 10, strategy: 'manual', manualItemIds: [unrelated] }),
+    ).toThrow(/RM-UNRELATED 不是主料 RM-001 在场景 sales_out 下的替代料/);
+  });
+
+  it('手工指名只配在别的场景的替代料 → 400（场景是硬分区，不是静默回落）', () => {
+    const sub = makeItem('RM-SUB-1');
+    stock(sub, 100);
+    relate(fx.itemId, sub, { scene: 'bom_plan' });
+
+    expect(() =>
+      plan({
+        mainItemId: fx.itemId,
+        requiredQty: 10,
+        scene: 'sales_out',
+        strategy: 'manual',
+        manualItemIds: [sub],
+      }),
+    ).toThrow(/不是主料 .* 在场景 sales_out 下的替代料/);
+  });
 });
 
 describe('替代料规划 · 客户正向认证', () => {

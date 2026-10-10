@@ -257,7 +257,11 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-3 库存（含历史快照）',
         'x-returns':
-          '库存数组（on_hand / frozen / qc / total_qty + reserved / in_transit / available / projected）+ page',
+          '库存数组（on_hand / frozen / qc / total_qty + reserved / in_transit / available / projected）+ page。' +
+          '口径：on_hand = 仅 available 桶数量；frozen / qc 是**独立桶**（只进 total_qty = on_hand + frozen + qc）；' +
+          'available = on_hand − reserved（可承诺量 ATP，**可为负**，负值表示已超卖）；' +
+          'projected = on_hand + in_transit − reserved。注意 reserved 是**软预占**：仅作报表口径，' +
+          '出入库等写路径只校验物理量，系统允许超卖',
         parameters: [
           AS_OF_PARAM,
           keywordParam,
@@ -572,7 +576,9 @@ export const openapiDocument = {
         tags: ['public'],
         summary: 'IF-9 替代规划（只读试算，整份返回）',
         'x-returns':
-          '分配建议对象（allocations / filled_qty / gap_qty / skipped）+ _warnings（不分页，plan 整份返回）',
+          '分配建议对象（allocations / filled_qty / gap_qty / skipped）+ _warnings（不分页，plan 整份返回）。' +
+          '注意 filled_qty 可能**大于** required_qty（比例向上取整所致），skipped 只列「无法参与分配」的替代料，' +
+          '不含「可参与但未轮到的候选」',
         description:
           '按主料 + 仓库 + 需求量给出替代分配建议；只读试算，不写任何单据或库存（调用前后库存与替代关系零变化）。' +
           '三种 strategy：proportion 主料优先，缺口按 priority 用替代料按比例（ratio_num / ratio_den）补齐；' +
@@ -580,7 +586,12 @@ export const openapiDocument = {
           'manual 主料优先，缺口只用手工指定的 manual_item_codes（按给定顺序）补。' +
           '规划结果整份返回、不分页：page / page_size 仅为与其它接口保持入参一致而接收，不影响结果；' +
           'format=csv 时一行 = 一条 allocation。' +
-          'as_of 只筛选替代关系生效期（effective_from / effective_to），可用库存与成本始终是当前时点，历史时点不可还原，并在 _warnings 中提示。',
+          'as_of 只筛选替代关系生效期（effective_from / effective_to），可用库存与成本始终是当前时点，历史时点不可还原，并在 _warnings 中提示。' +
+          '【可用量口径】规划按**物理可用量**分配：allocations[].on_hand 即 stock_balance 中 available 桶的数量，' +
+          '等于 IF-3 /inventory 的 on_hand，**不扣减**已确认未出库的销售预占 reserved——这与出库校验口径一致。' +
+          'IF-3 的 available 是「可承诺量 ATP = on_hand − reserved」（可为负），两者不是同一个量；' +
+          '需要 ATP 或超卖视角请取 IF-3 的 reserved / available / projected。' +
+          'allocations[].available 是 on_hand 的历史别名，已弃用，将在下个版本移除。',
         parameters: [
           {
             ...codeParam('main_item_code', 'RM-001'),
@@ -654,7 +665,8 @@ export const openapiDocument = {
                 quantity: 30,
                 covered_qty: 30,
                 is_main: true,
-                available: 30,
+                on_hand: 30,
+                available: 30, // 过渡别名，已弃用
                 unit_cost: 5000,
                 ratio_num: 1,
                 ratio_den: 1,
@@ -665,7 +677,8 @@ export const openapiDocument = {
                 quantity: 70,
                 covered_qty: 70,
                 is_main: false,
-                available: 200,
+                on_hand: 200,
+                available: 200, // 过渡别名，已弃用
                 unit_cost: 4800,
                 ratio_num: 1,
                 ratio_den: 1,

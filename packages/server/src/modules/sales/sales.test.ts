@@ -728,7 +728,7 @@ describe('P10 销售出库替代 · substituteItemId 手工指定', () => {
     expect(readBalanceByStatus(db, chosen, fx.warehouseId).available).toBe(130);
   });
 
-  it('指定的替代料不存在替代关系 → 409 并说明缺口', () => {
+  it('指定的替代料不是该主料的有效替代料 → 400（请求错误，不是缺料）', () => {
     const stray = makeItem('RM-NO-RELATION');
     seedStock(30, 500);
     stockItem(stray, 200, 700);
@@ -736,12 +736,16 @@ describe('P10 销售出库替代 · substituteItemId 手工指定', () => {
     const id = createConfirmed([salesItem({ quantity: 100 })]);
     const itemId = getOrderDetail(id).items[0].id;
 
+    // 以前这类输入会被静默忽略、最终以「仍缺 N」409 收场，把"参数传错"伪装成"库存不足"。
+    // 现在与手工指定同一套校验：不在该 (主料, 场景) 的替代关系里就明确拒绝。
     expect(() =>
       shipSales(
         { orderId: id, lines: [{ orderItemId: itemId, quantity: 100, substituteItemId: stray }] },
         null,
       ),
-    ).toThrow(/仍缺/);
+    ).toThrow(/不是主料 .* 在场景 sales_out 下的替代料/);
+    // 拒绝后整单不落库
+    expect(readBalanceByStatus(db, stray, fx.warehouseId).available).toBe(200);
   });
 
   it('同一行同时给 allowSubstitute 与 substituteItemId → schema 拒绝', () => {

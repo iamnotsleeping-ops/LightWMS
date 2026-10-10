@@ -732,6 +732,10 @@ export function substitutionPlan(query: PublicSubstitutionPlanQuery): {
   });
 
   const warnings = [...plan.warnings];
+  // 刻意**不**在这里常驻一条「按物理量计算」的口径告警：
+  // ① 下游已明确「把 reserved / available / projected 暴露出来就够了」，不需要每条响应都提醒；
+  // ② _warnings 按契约是「口径近似与截断提示」，常驻会让它无法再表达"本次确有异常"；
+  // ③ 会破坏下游已通过的逐字段对账。口径改由字段名（on_hand）+ OpenAPI 描述 + README 承载。
   if (query.as_of) {
     warnings.push(
       '指定 as_of 时仅按生效期（effective_from / effective_to）筛选替代关系；可用库存与成本始终为当前时点，历史时点的可用量不可还原',
@@ -754,7 +758,10 @@ export function substitutionPlan(query: PublicSubstitutionPlanQuery): {
         quantity: entry.quantity,
         covered_qty: entry.coveredQty,
         is_main: entry.isMain,
-        available: entry.available,
+        // 物理可用量（available 桶）＝ IF-3 的 on_hand
+        on_hand: entry.onHand,
+        // 过渡别名：历史上本字段叫 available，但那是 ATP 的名字，已弃用；下个版本移除
+        available: entry.onHand,
         unit_cost: entry.unitCost,
         ratio_num: entry.ratioNum,
         ratio_den: entry.ratioDen,

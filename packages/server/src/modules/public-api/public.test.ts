@@ -615,7 +615,8 @@ describe('IF-9 替代规划（只读试算）', () => {
         quantity: 30,
         covered_qty: 30,
         is_main: true,
-        available: 30,
+        on_hand: 30,
+        available: 30, // 过渡别名
         unit_cost: 500,
         ratio_num: 1,
         ratio_den: 1,
@@ -626,13 +627,15 @@ describe('IF-9 替代规划（只读试算）', () => {
         quantity: 70,
         covered_qty: 70,
         is_main: false,
-        available: 200,
+        on_hand: 200,
+        available: 200, // 过渡别名
         unit_cost: 500,
         ratio_num: 1,
         ratio_den: 1,
       },
     ]);
     expect(body.data.skipped).toEqual([]);
+    // 规划不写任何常驻告警：口径由字段名 on_hand + OpenAPI/README 承载
     expect(body._warnings).toEqual([]);
   });
 

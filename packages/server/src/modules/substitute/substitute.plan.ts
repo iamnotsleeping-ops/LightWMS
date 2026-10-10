@@ -60,8 +60,15 @@ export interface SubstitutionAllocation {
   /** 该数量折算回主料口径的覆盖量 */
   coveredQty: number;
   isMain: boolean;
-  /** 取数时的物理可用量（available 桶） */
-  available: number;
+  /**
+   * 取数时的**物理可用量**，即 `stock_balance` 中 `stock_status='available'` 的桶量，
+   * 也就是 IF-3 `/inventory` 里的 `on_hand`。
+   *
+   * 刻意不叫 `available`：IF-3 的 `available` 是「可承诺量 ATP = on_hand − reserved」，
+   * 两者同名不同义，曾让下游据此推出错误的约束。规划按物理量分配（与出库校验一致），
+   * 不扣减销售预占 reserved。
+   */
+  onHand: number;
   unitCost: number;
   ratioNum: number;
   ratioDen: number;
@@ -227,8 +234,29 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
 
   // 策略：显式入参优先，否则取首个候选关系上的策略，最后兜底 proportion
   const strategy: SubstituteStrategy = request.strategy ?? candidates[0]?.strategy ?? 'proportion';
-  if (strategy === 'manual' && (request.manualItemIds ?? []).length === 0) {
-    throw new ApiError(400, '手工指定策略必须提供 manualItemIds');
+  const manualOrder = request.manualItemIds ?? [];
+
+  if (strategy === 'manual') {
+    if (manualOrder.length === 0) {
+      // 文案用「对外参数名」：这句话最早把内部参数名（manualItemIds）漏给了外部调用方
+      throw new ApiError(400, '手工指定策略（manual）必须提供手工替代料列表（对外参数 manual_item_codes）');
+    }
+    // 手工指定的每一项都必须是该 (主料, 场景) 的候选之一。
+    // 候选只来自 item_substitute 中 main_item_id = 主料 的行，所以"指名主料自己"、
+    // "指名一个无关物料"、"指名只配在别的场景的替代料"都会落进这里。
+    // 这类输入以前是**静默无效**的（既不在 allocations 也不在 skipped），调用方会看到
+    // "换了输入、结果没变"——属于最难发现的错，必须显式拒绝。
+    const candidateIds = new Set(candidates.map((candidate) => candidate.subItemId));
+    for (const itemId of manualOrder) {
+      if (candidateIds.has(itemId)) continue;
+      const row = db.prepare('SELECT code FROM item WHERE id = ?').get(itemId) as
+        | { code: string }
+        | undefined;
+      throw new ApiError(
+        400,
+        `替代料 ${row?.code ?? itemId} 不是主料 ${main.code} 在场景 ${request.scene} 下的替代料，不能手工指定（对外参数 manual_item_codes）`,
+      );
+    }
   }
 
   // ---------- 主料分配（按策略决定是否先用主料） ----------
@@ -237,7 +265,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
   //   whole_batch：**不做混用**——主料能全额覆盖就全用主料，否则找单一替代料整批顶上，
   //                都做不到时不做任何分配并把缺口全量返回（宁可缺料，也不拆批）
   const allocations: SubstitutionAllocation[] = [];
-  const mainAvailable = readBalanceByStatus(db, main.id, request.warehouseId).available;
+  const mainOnHand = readBalanceByStatus(db, main.id, request.warehouseId).available;
   const mainCost = readWarehouseCostOf(db, main.id, request.warehouseId);
 
   const allocate = (
@@ -248,7 +276,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
     isMain: boolean,
     ratioNum: number,
     ratioDen: number,
-    available: number,
+    onHand: number,
     unitCost: number,
   ): void => {
     allocations.push({
@@ -258,7 +286,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
       quantity,
       coveredQty: isMain ? quantity : coveredBy(quantity, ratioNum, ratioDen),
       isMain,
-      available,
+      onHand,
       unitCost,
       ratioNum,
       ratioDen,
@@ -267,21 +295,20 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
 
   let gap = request.requiredQty;
   if (strategy === 'whole_batch') {
-    if (mainAvailable >= request.requiredQty) {
-      allocate(main.id, main.code, main.name, request.requiredQty, true, 1, 1, mainAvailable, mainCost);
+    if (mainOnHand >= request.requiredQty) {
+      allocate(main.id, main.code, main.name, request.requiredQty, true, 1, 1, mainOnHand, mainCost);
       gap = 0;
     }
     // 主料不足时不先占用主料，等下面找能整批覆盖的替代料
   } else {
-    const mainQty = Math.min(mainAvailable, request.requiredQty);
+    const mainQty = Math.min(mainOnHand, request.requiredQty);
     if (mainQty > 0) {
-      allocate(main.id, main.code, main.name, mainQty, true, 1, 1, mainAvailable, mainCost);
+      allocate(main.id, main.code, main.name, mainQty, true, 1, 1, mainOnHand, mainCost);
     }
     gap = request.requiredQty - mainQty;
   }
 
   // ---------- 替代料筛选（客户认证 + 库存），跳过必须留原因 ----------
-  const manualOrder = request.manualItemIds ?? [];
   const customerId = request.scene === 'sales_out' ? (request.customerId ?? null) : null;
   const certStmt = db.prepare(
     'SELECT expire_at FROM item_customer_certification WHERE item_id = ? AND customer_id = ?',
@@ -290,7 +317,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
 
   const usable: {
     candidate: SubstituteCandidate;
-    available: number;
+    onHand: number;
     unitCost: number;
   }[] = [];
 
@@ -326,14 +353,14 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
       }
     }
 
-    const available = readBalanceByStatus(db, candidate.subItemId, request.warehouseId).available;
-    if (available <= 0) {
+    const onHand = readBalanceByStatus(db, candidate.subItemId, request.warehouseId).available;
+    if (onHand <= 0) {
       skipped.push({ itemId: candidate.subItemId, itemCode: candidate.subItemCode, reason: 'no_stock' });
       continue;
     }
     usable.push({
       candidate,
-      available,
+      onHand,
       unitCost: readWarehouseCostOf(db, candidate.subItemId, request.warehouseId),
     });
   }
@@ -343,7 +370,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
     if (strategy === 'whole_batch') {
       // 不混用：找一个能 100% 覆盖**总需求**的替代料整批顶上
       const full = usable.find(
-        (entry) => coveredBy(entry.available, entry.candidate.ratioNum, entry.candidate.ratioDen) >= request.requiredQty,
+        (entry) => coveredBy(entry.onHand, entry.candidate.ratioNum, entry.candidate.ratioDen) >= request.requiredQty,
       );
       if (full) {
         const need = ceilDiv(request.requiredQty * full.candidate.ratioNum, full.candidate.ratioDen);
@@ -355,13 +382,13 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
           false,
           full.candidate.ratioNum,
           full.candidate.ratioDen,
-          full.available,
+          full.onHand,
           full.unitCost,
         );
         gap = request.requiredQty - coveredBy(need, full.candidate.ratioNum, full.candidate.ratioDen);
       } else {
         warnings.push(
-          `整批全量策略要求单一物料覆盖全部需求 ${request.requiredQty}：主料仅 ${mainAvailable} 可用，` +
+          `整批全量策略要求单一物料覆盖全部需求 ${request.requiredQty}：主料物理可用 ${mainOnHand}，` +
             `且无单一替代料可全额覆盖（按该策略不做混用，故未分配任何物料）`,
         );
       }
@@ -376,10 +403,10 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
 
       for (const entry of ordered) {
         if (gap <= 0) break;
-        const { candidate, available, unitCost } = entry;
+        const { candidate, onHand, unitCost } = entry;
         const gapBefore = gap;
         const need = ceilDiv(gapBefore * candidate.ratioNum, candidate.ratioDen);
-        const take = Math.min(need, available);
+        const take = Math.min(need, onHand);
         if (take <= 0) continue;
         const covered = coveredBy(take, candidate.ratioNum, candidate.ratioDen);
         allocate(
@@ -390,12 +417,12 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
           false,
           candidate.ratioNum,
           candidate.ratioDen,
-          available,
+          onHand,
           unitCost,
         );
         if (take < need) {
           warnings.push(
-            `替代料 ${candidate.subItemCode} 可用量 ${available} 不足以补满缺口（需 ${need}），已按可用量分配`,
+            `替代料 ${candidate.subItemCode} 物理可用量 ${onHand} 不足以补满缺口（需 ${need}），已按可用量分配`,
           );
         }
         // 仅当"缺口 × 分子 / 分母"不能整除时才算发生取整，此时才提示，避免噪音
