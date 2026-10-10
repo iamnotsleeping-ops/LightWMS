@@ -591,7 +591,7 @@ export const openapiDocument = {
           '等于 IF-3 /inventory 的 on_hand，**不扣减**已确认未出库的销售预占 reserved——这与出库校验口径一致。' +
           'IF-3 的 available 是「可承诺量 ATP = on_hand − reserved」（可为负），两者不是同一个量；' +
           '需要 ATP 或超卖视角请取 IF-3 的 reserved / available / projected。' +
-          'allocations[].available 是 on_hand 的历史别名，已弃用，将在下个版本移除。' +
+          'allocations[].available（借用 ATP 名字的历史别名）已移除，请只读 on_hand。' +
           '【作用域与优先级】同一替代料可配多行（通用 / 仓专属 / 父件专属）；规划按替代料去重后只取**第一条通过全部校验**的行，' +
           '取数顺序为「仓专属 → 父件专属 → priority 升序 → id 升序」（**仓专属优先于父件专属**），' +
           '最专属行失效时回落到同一替代料的下一条有效行；跨替代料的兜底顺序按 priority 升序、同优先级按替代料编码。' +
@@ -674,7 +674,6 @@ export const openapiDocument = {
                 covered_qty: 30,
                 is_main: true,
                 on_hand: 30,
-                available: 30, // 过渡别名，已弃用
                 unit_cost: 5000,
                 ratio_num: 1,
                 ratio_den: 1,
@@ -686,7 +685,6 @@ export const openapiDocument = {
                 covered_qty: 70,
                 is_main: false,
                 on_hand: 200,
-                available: 200, // 过渡别名，已弃用
                 unit_cost: 4800,
                 ratio_num: 1,
                 ratio_den: 1,

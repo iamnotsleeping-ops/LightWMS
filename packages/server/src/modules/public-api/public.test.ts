@@ -616,7 +616,6 @@ describe('IF-9 替代规划（只读试算）', () => {
         covered_qty: 30,
         is_main: true,
         on_hand: 30,
-        available: 30, // 过渡别名
         unit_cost: 500,
         ratio_num: 1,
         ratio_den: 1,
@@ -628,7 +627,6 @@ describe('IF-9 替代规划（只读试算）', () => {
         covered_qty: 70,
         is_main: false,
         on_hand: 200,
-        available: 200, // 过渡别名
         unit_cost: 500,
         ratio_num: 1,
         ratio_den: 1,

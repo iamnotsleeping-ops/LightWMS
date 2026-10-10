@@ -758,10 +758,9 @@ export function substitutionPlan(query: PublicSubstitutionPlanQuery): {
         quantity: entry.quantity,
         covered_qty: entry.coveredQty,
         is_main: entry.isMain,
-        // 物理可用量（available 桶）＝ IF-3 的 on_hand
+        // 物理可用量（available 桶）＝ IF-3 的 on_hand。
+        // 过渡别名 available 已于下游切换完成后移除（它借用的是 ATP 的名字）。
         on_hand: entry.onHand,
-        // 过渡别名：历史上本字段叫 available，但那是 ATP 的名字，已弃用；下个版本移除
-        available: entry.onHand,
         unit_cost: entry.unitCost,
         ratio_num: entry.ratioNum,
         ratio_den: entry.ratioDen,
