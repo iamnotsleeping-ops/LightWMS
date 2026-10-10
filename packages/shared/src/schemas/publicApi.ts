@@ -155,6 +155,19 @@ export const publicSubstitutesQuerySchema = publicPaginationSchema.extend({
 });
 export type PublicSubstitutesQuery = z.infer<typeof publicSubstitutesQuerySchema>;
 
+// ---------- IF-10 客户认证（只读，供下游把认证关系同步进自己的知识层） ----------
+/**
+ * **无 `as_of`**（下游明确不要）：时点判断由消费方按 `expire_at` 自行做。
+ * **不过滤已过期行**：默认返回全量——「已过期」与「从未认证」是不同语义，
+ * 过滤掉就区分不出来（下游的口径是 default-deny：缺行 = 未认证）。
+ */
+export const publicCertificationsQuerySchema = publicPaginationSchema.extend({
+  item_code: optionalText(50),
+  customer_code: optionalText(50),
+  format: publicFormatSchema,
+});
+export type PublicCertificationsQuery = z.infer<typeof publicCertificationsQuerySchema>;
+
 // ---------- IF-9 替代规划（只读试算，整份返回） ----------
 /**
  * 规划结果整体返回（不分页）：`page` / `page_size` 仅为与其它接口保持入参一致而接收，不影响结果。

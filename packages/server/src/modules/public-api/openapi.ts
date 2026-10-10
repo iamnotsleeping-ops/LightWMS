@@ -535,6 +535,54 @@ export const openapiDocument = {
         },
       },
     },
+    '/item-certifications': {
+      get: {
+        tags: ['public'],
+        summary: 'IF-10 客户认证关系（只读，全量含已过期）',
+        'x-returns':
+          '认证关系数组（item_code / item_name / customer_code / certified_at / expire_at）+ page（分页）。' +
+          '`expire_at` 为 null = **长期有效**',
+        description:
+          '物料 × 客户的**正向**认证关系（`item_customer_certification`），供下游把认证同步进自己的知识层，' +
+          '替代「用文件手工维护」。' +
+          '【口径·三条都是下游明确要求的】' +
+          '① **全量返回、含已过期行**：「已过期」与「从未认证」是不同语义，过滤掉就区分不出来' +
+          '（消费方口径是 default-deny：缺行 = 未认证）；' +
+          '② **不提供 `as_of`**：时点判断由消费方按 `expire_at` 自行做，本接口不做任何时点筛选；' +
+          '③ 客户**只给编码**（与其它对外接口一致地脱敏，不给客户名称）。' +
+          '不返回「是否有效」之类的派生字段——口径留在消费方，避免同名不同义。' +
+          '排序为 物料编码 → 客户编码（全量分页同步时顺序确定，不会漏行/重行）。',
+        parameters: [
+          codeParam('item_code', 'FG-1001'),
+          codeParam('customer_code', 'CU-2001'),
+          FORMAT_PARAM,
+          PAGE_PARAM,
+          PAGE_SIZE_PARAM,
+        ],
+        responses: {
+          '401': UNAUTHORIZED_RESPONSE,
+          '200': envelopeResponse(
+            [
+              {
+                item_code: 'FG-1001',
+                item_name: '智能网关 A',
+                customer_code: 'CU-2001',
+                certified_at: '2026-08-11',
+                expire_at: null,
+              },
+              {
+                item_code: 'FG-1002',
+                item_name: '智能网关 B',
+                customer_code: 'CU-2002',
+                certified_at: '2026-03-25',
+                expire_at: '2026-10-09',
+              },
+            ],
+            true,
+          ),
+        },
+      },
+    },
     '/warehouses': {
       get: {
         tags: ['public'],

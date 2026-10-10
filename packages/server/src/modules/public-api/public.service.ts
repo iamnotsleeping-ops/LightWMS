@@ -3,6 +3,7 @@ import {
   SALES_ORDER_STATUSES,
   type PublicBomExplodeQuery,
   type PublicBomsQuery,
+  type PublicCertificationsQuery,
   type PublicInTransitQuery,
   type PublicInventoryQuery,
   type PublicItemsQuery,
@@ -617,6 +618,51 @@ export function listPublicWarehouses(query: PublicWarehousesQuery): Row[] {
          ${clause} ORDER BY w.type, w.code`,
     )
     .all(...params) as Row[];
+}
+
+// ---------- IF-10 客户认证（只读） ----------
+
+/**
+ * 客户 × 物料的**正向**认证关系（`item_customer_certification`）。
+ *
+ * 口径（下游明确要求）：
+ *   · **全量返回，含已过期行** —— 「已过期」与「从未认证」不同义，由消费方按 `expire_at` 判断；
+ *   · **不提供 `as_of`** —— 时点判断在消费方（门禁口径）；
+ *   · `expire_at` 为 null 表示**长期有效**；
+ *   · 只给客户**编码**（与其它对外接口一致地脱敏，不给客户名称）。
+ */
+export function listPublicItemCertifications(query: PublicCertificationsQuery): PublicPaged {
+  const db = getDb();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (query.item_code) {
+    where.push('i.code = ?');
+    params.push(query.item_code);
+  }
+  if (query.customer_code) {
+    where.push('p.code = ?');
+    params.push(query.customer_code);
+  }
+  const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const base = `FROM item_customer_certification cert
+       JOIN item i ON i.id = cert.item_id
+       JOIN partner p ON p.id = cert.customer_id`;
+
+  const { total } = db.prepare(`SELECT COUNT(*) AS total ${base} ${clause}`).get(...params) as {
+    total: number;
+  };
+  // 稳定排序（物料编码 → 客户编码）：全量同步分页时顺序必须确定，否则会漏行/重行
+  const list = db
+    .prepare(
+      `SELECT i.code AS item_code, i.name AS item_name,
+              p.code AS customer_code, cert.certified_at, cert.expire_at
+         ${base} ${clause}
+        ORDER BY i.code, p.code
+        LIMIT ? OFFSET ?`,
+    )
+    .all(...params, query.page_size, (query.page - 1) * query.page_size) as Row[];
+
+  return { list, page: pageOf(query, total), warnings: [] };
 }
 
 // ---------- IF-8 替代关系（关系清单，非规划结果） ----------

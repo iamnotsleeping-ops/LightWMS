@@ -62,7 +62,7 @@ pnpm typecheck      # 全仓类型检查
 - 权限码格式为 `模块.资源.动作`，动作为 `view` / `manage` / `confirm`（如 `masterdata.item.manage`；`report.view` 为两段式例外），共 38 个权限码；内置 5 个角色：`sys_admin` / `purchaser` / `salesperson` / `warehouse_keeper` / `viewer`。`sys_admin` 的权限集不可通过接口改写（新增权限码由迁移补种）。
 - 角色分配有两道护栏：不允许修改**自己**的角色，不允许移除**最后一名**系统管理员。
 - 替代料相关权限单独成码：`masterdata.substitute.view` / `masterdata.substitute.manage` / **`sales.outbound.substitute`**（后者与 `sales.outbound.manage` 分离，便于按角色单独收回「替代出库」能力而不影响正常出库）。
-- 对外 11 条只读数据接口（`/api/v1/*`）**要求 API Key**（请求头 `X-API-Key`，见「对外数据接口 · 约定」），另有 1 个文档接口 `GET /api/v1/openapi.json` 保持公开。这些接口会暴露库存、采购单价、供应商提前期、销售订单行、客户认证与替代关系，因此除 Key 之外仍建议绑定内网地址或置于反向代理之后。
+- 对外 12 条只读数据接口（`/api/v1/*`）**要求 API Key**（请求头 `X-API-Key`，见「对外数据接口 · 约定」），另有 1 个文档接口 `GET /api/v1/openapi.json` 保持公开。这些接口会暴露库存、采购单价、供应商提前期、销售订单行、客户认证与替代关系，因此除 Key 之外仍建议绑定内网地址或置于反向代理之后。
 
 ## 目录结构
 
@@ -161,6 +161,7 @@ projected  = on_hand + in_transit - reserved     -- 预计可用（补货/缺货
 | IF-7 | `GET /api/v1/warehouses` | 工厂 / 仓库主数据 |
 | IF-8 | `GET /api/v1/substitutes?main_item_code=&warehouse_code=&scene=&as_of=` | 替代关系清单（按优先级，含适用仓 / 父件 / 比例 / 生效期），供下游自行净算 |
 | IF-9 | `GET /api/v1/substitution-plan?main_item_code=&warehouse_code=&required_qty=&scene=&customer_code=&strategy=&manual_item_codes=&as_of=` | **给定需求直接返回替代分配建议**（分配明细 / 已覆盖 / 缺口 / 跳过原因 / 告警）。只读无副作用 |
+| IF-10 | `GET /api/v1/item-certifications?item_code=&customer_code=` | 客户认证关系（`item_code` / `item_name` / `customer_code` / `certified_at` / `expire_at`）。**全量返回、含已过期行**（「已过期」与「从未认证」不同义，由消费方按 `expire_at` 判断；`expire_at` 空 = 长期有效）；**无 `as_of`**，时点判断在消费方；排序为 物料编码 → 客户编码，便于全量分页同步 |
 
 ### 约定
 

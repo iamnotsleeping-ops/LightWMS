@@ -2,6 +2,7 @@ import {
   publicBomExplodeParamSchema,
   publicBomExplodeQuerySchema,
   publicBomsQuerySchema,
+  publicCertificationsQuerySchema,
   publicInTransitQuerySchema,
   publicInventoryQuerySchema,
   publicItemsQuerySchema,
@@ -22,6 +23,7 @@ import { openapiDocument } from './openapi';
 import {
   explodePublicBom,
   listPublicBoms,
+  listPublicItemCertifications,
   listPublicInTransit,
   listPublicItems,
   listPublicPurchaseHistory,
@@ -142,6 +144,14 @@ function registerPublicDataRoutes(app: FastifyInstance): void {
     const query = publicSalesOrdersQuerySchema.parse(request.query);
     const result = listPublicSalesOrders(query);
     if (query.format === 'csv') return sendCsv(reply, result.list, 'sales-orders', result.warnings);
+    return okPage(result.list, result.page, result.warnings);
+  });
+
+  app.get('/api/v1/item-certifications', async (request, reply) => {
+    const query = publicCertificationsQuerySchema.parse(request.query);
+    const result = listPublicItemCertifications(query);
+    if (query.format === 'csv')
+      return sendCsv(reply, result.list, 'item-certifications', result.warnings);
     return okPage(result.list, result.page, result.warnings);
   });
 

@@ -24,6 +24,7 @@ const DATA_URLS = [
   '/api/v1/purchase-history',
   '/api/v1/suppliers/SU-01/lead-time-stats',
   '/api/v1/sales-orders',
+  '/api/v1/item-certifications',
   '/api/v1/warehouses',
   '/api/v1/substitutes?main_item_code=RM-001',
   '/api/v1/substitution-plan?main_item_code=RM-001&warehouse_code=WH-01&required_qty=1',

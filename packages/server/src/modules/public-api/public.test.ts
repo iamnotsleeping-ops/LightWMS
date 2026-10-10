@@ -165,7 +165,7 @@ function makeConfirmedSales(quantity: number): number {
 const get = (url: string) => app.inject({ method: 'GET', url });
 
 describe('对外只读接口 · 公开与信封', () => {
-  it('11 条接口不带 Authorization 均返回 200（公开无鉴权）', async () => {
+  it('12 条接口在不配 Key 的非生产环境均返回 200（生产必须配 Key）', async () => {
     insertBom(fx.portItemId, fx.itemId, 1, '2026-01-01', null);
     const urls = [
       '/api/v1/items',
@@ -564,6 +564,99 @@ describe('IF-6 销售订单行', () => {
   });
 });
 
+describe('IF-10 客户认证关系（只读）', () => {
+  /** 造一条认证关系；expireAt 传 null 表示长期有效 */
+  function certify(itemId: number, customerId: number, certifiedAt: string, expireAt: string | null): void {
+    db.prepare(
+      `INSERT INTO item_customer_certification (item_id, customer_id, certified_at, expire_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(itemId, customerId, certifiedAt, expireAt);
+  }
+
+  it('全量返回含已过期行；字段固定；expire_at 为 null 表示长期有效', async () => {
+    const second = insertItem('FG-002', '测试成品二');
+    // fx.itemId（RM-001）长期有效；second 对同一客户**已过期**
+    certify(fx.itemId, fx.customerId, '2026-01-01', null);
+    certify(second, fx.customerId, '2026-01-01', '2026-02-01');
+
+    const body = (await get('/api/v1/item-certifications')).json();
+    expect(body.page.total).toBe(2);
+    expect(body.data).toEqual([
+      {
+        item_code: 'FG-002',
+        item_name: '测试成品二',
+        customer_code: 'CU-01',
+        certified_at: '2026-01-01',
+        // 已过期行**照样返回**：「已过期」与「从未认证」不同义，由消费方判断
+        expire_at: '2026-02-01',
+      },
+      {
+        item_code: 'RM-001',
+        item_name: '测试零件',
+        customer_code: 'CU-01',
+        certified_at: '2026-01-01',
+        expire_at: null, // 长期有效
+      },
+    ]);
+    // 不返回「是否有效」之类的派生态：口径留在消费方
+    expect(body.data[0]).not.toHaveProperty('is_expired');
+    expect(body.data[0]).not.toHaveProperty('valid');
+    // 客户只给编码，不给名称（与其它对外接口一致地脱敏）
+    expect(body.data[0]).not.toHaveProperty('customer_name');
+  });
+
+  it('按 item_code / customer_code 过滤；排序为 物料编码 → 客户编码（全量同步不漏行重行）', async () => {
+    const secondItem = insertItem('FG-002', '测试成品二');
+    const otherCustomer = db
+      .prepare(
+        `INSERT INTO partner (code, name, type, is_active, created_at, updated_at)
+         VALUES ('CU-99', '另一客户', 'customer', 1, ?, ?)`,
+      )
+      .run(nowIso(), nowIso()).lastInsertRowid as number;
+
+    certify(fx.itemId, otherCustomer, '2026-01-02', null);
+    certify(fx.itemId, fx.customerId, '2026-01-01', null);
+    certify(secondItem, fx.customerId, '2026-01-03', null);
+
+    const all = (await get('/api/v1/item-certifications')).json();
+    // 同一物料下按客户编码排序：CU-01 在 CU-99 之前
+    expect(all.data.map((row: { item_code: string; customer_code: string }) => `${row.item_code}:${row.customer_code}`)).toEqual([
+      'FG-002:CU-01',
+      'RM-001:CU-01',
+      'RM-001:CU-99',
+    ]);
+
+    const byItem = (await get('/api/v1/item-certifications?item_code=RM-001')).json();
+    expect(byItem.page.total).toBe(2);
+
+    const byCustomer = (await get('/api/v1/item-certifications?customer_code=CU-99')).json();
+    expect(byCustomer.page.total).toBe(1);
+    expect(byCustomer.data[0].item_code).toBe('RM-001');
+  });
+
+  it('未命中返回空数组且 total=0（不是 404）', async () => {
+    const body = (await get('/api/v1/item-certifications?item_code=NOPE')).json();
+    expect(body.code).toBe(0);
+    expect(body.data).toEqual([]);
+    expect(body.page.total).toBe(0);
+  });
+
+  it('分页与 CSV：全量同步可翻页、可导 CSV', async () => {
+    const items = [insertItem('FG-002', '成品二'), insertItem('FG-003', '成品三')];
+    certify(fx.itemId, fx.customerId, '2026-01-01', null);
+    for (const id of items) certify(id, fx.customerId, '2026-01-02', null);
+
+    const page2 = (await get('/api/v1/item-certifications?page=2&page_size=2')).json();
+    expect(page2.page).toEqual({ page: 2, pageSize: 2, total: 3 });
+    expect(page2.data).toHaveLength(1);
+
+    const csv = await get('/api/v1/item-certifications?format=csv');
+    expect(csv.statusCode).toBe(200);
+    expect(csv.headers['content-type']).toContain('text/csv');
+    expect(csv.body).toContain('item_code');
+  });
+});
+
 describe('IF-7 工厂 / 仓库', () => {
   it('type 过滤与 parent_code 映射', async () => {
     db.prepare(
@@ -840,12 +933,12 @@ describe('format=csv', () => {
 });
 
 describe('OpenAPI 文档', () => {
-  it('openapi.json 返回 3.1 且包含 11 条路径', async () => {
+  it('openapi.json 返回 3.1 且包含 12 条路径', async () => {
     const res = await get('/api/v1/openapi.json');
     expect(res.statusCode).toBe(200);
     const doc = res.json();
     expect(doc.openapi.startsWith('3.1')).toBe(true);
-    expect(Object.keys(doc.paths)).toHaveLength(11);
+    expect(Object.keys(doc.paths)).toHaveLength(12);
   });
 
   /**
@@ -883,7 +976,7 @@ describe('OpenAPI 文档', () => {
     const doc = (await get('/api/v1/openapi.json')).json();
     type Doc = { get: { summary?: string; 'x-returns'?: string } };
     const entries = Object.entries(doc.paths) as [string, Doc][];
-    expect(entries).toHaveLength(11);
+    expect(entries).toHaveLength(12);
 
     for (const [path, operations] of entries) {
       expect(operations.get.summary, `${path} 缺 summary`).toBeTruthy();
@@ -931,7 +1024,7 @@ describe('OpenAPI 文档', () => {
     }
   });
 
-  it('11 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
+  it('12 个接口的 example.data 均为真实响应样例（对象/数组，非字符串占位）', async () => {
     const doc = (await get('/api/v1/openapi.json')).json();
     type Doc = {
       get: {
@@ -948,6 +1041,7 @@ describe('OpenAPI 文档', () => {
       '/purchase-history',
       '/sales-orders',
       '/substitutes',
+      '/item-certifications',
     ]);
 
     for (const [path, item] of entries) {
