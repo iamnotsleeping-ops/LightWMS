@@ -150,7 +150,7 @@
           <template #default="{ row }">{{ formatQty(row.coveredQty, 0) }}</template>
         </el-table-column>
         <el-table-column label="当时可用量" width="120" align="right">
-          <template #default="{ row }">{{ formatQty(row.available, 0) }}</template>
+          <template #default="{ row }">{{ formatQty(row.onHand, 0) }}</template>
         </el-table-column>
         <el-table-column label="比例" width="100" align="right">
           <template #default="{ row }">{{ ratioText(row.ratioNum, row.ratioDen) }}</template>
@@ -242,7 +242,8 @@ interface PlanAllocation {
   quantity: number;
   coveredQty: number;
   isMain: boolean;
-  available: number;
+  /** 物理可用量（available 桶）＝ IF-3 的 on_hand；不是 ATP */
+  onHand: number;
   unitCost: number;
   ratioNum: number;
   ratioDen: number;
