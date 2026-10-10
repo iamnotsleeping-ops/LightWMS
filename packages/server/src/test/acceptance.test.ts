@@ -6,6 +6,7 @@ import { hasSeedMarker, seedDemoData } from '../db/seed';
 import { addBusinessDays, businessToday } from '../lib/time';
 import { queryAlerts } from '../modules/inventory/alert.service';
 import { createTestDb } from './db';
+import { planSubstitution } from '../modules/substitute/substitute.plan';
 
 /**
  * P9 端到端验收：在空库上跑 seed 后，逐阶段核对各交付物。
@@ -150,7 +151,7 @@ describe('P9 验收 · 全链路', () => {
     // 认证：FG-1001/CU-2001（长期）、FG-1002/CU-2001（长期）、FG-1002/CU-2002（已过期）
     expect(countTable('item_customer_certification')).toBe(3);
     // P10 替代料：12 条关系覆盖三种场景 × 三种策略 × 通用/仓专属/父件专属 × 生效/未生效/已过期/已停用
-    expect(countTable('item_substitute')).toBe(12);
+    expect(countTable('item_substitute')).toBe(13);
     // 替代执行追溯：SO-F（主料+替代料混用）与 SO-G（整行由替代料满足）各写 1 条
     expect(countTable('item_substitute_log')).toBe(2);
 
@@ -507,6 +508,56 @@ describe('P9 演示数据 · 枚举覆盖度', () => {
     // 断言确实扫到了足够多的枚举列，避免正则失效后本测试变成空测
     expect(checkedColumns).toBeGreaterThan(15);
     expect(gaps).toEqual([]);
+  });
+
+  /**
+   * 演示数据要能复现规划里的各个 skipped 原因，否则下游对账时无处构造判据。
+   * 这里只用「不指名」的普通规划：规则层不可用的关系会以 skipped 出现（手工指名会升为 400）。
+   */
+  it('演示数据可复现 wrong_warehouse / relation_inactive / out_of_validity / customer_cert_expired', () => {
+    const mainPk = itemIdOf('PK-4001');
+    const mainRm = itemIdOf('RM-3001');
+    const warehouseWh02 = (
+      db.prepare("SELECT id FROM warehouse WHERE code = 'WH-02'").get() as { id: number }
+    ).id;
+
+    const reasonsOf = (request: Parameters<typeof planSubstitution>[0]): string[] =>
+      planSubstitution(request, db).skipped.map((entry) => entry.reason);
+
+    // PK-4001 → PK-4003 的 purchase_hint 行只在 WH-01：请求 WH-02 应得 wrong_warehouse
+    expect(
+      reasonsOf({
+        mainItemId: mainPk,
+        warehouseId: warehouseWh02,
+        requiredQty: 10,
+        scene: 'purchase_hint',
+      }),
+    ).toContain('wrong_warehouse');
+
+    // PK-4001 → PK-4003 的 bom_plan 行已停用
+    expect(
+      reasonsOf({ mainItemId: mainPk, warehouseId: warehouseWh02, requiredQty: 10, scene: 'bom_plan' }),
+    ).toContain('relation_inactive');
+
+    // RM-3001 → RM-3005 的 sales_out 行尚未生效
+    expect(
+      reasonsOf({ mainItemId: mainRm, warehouseId: warehouseWh02, requiredQty: 10, scene: 'sales_out' }),
+    ).toContain('out_of_validity');
+
+    // FG-1002 对 CU-2002 的认证已于昨日过期
+    const customerCu2002 = (
+      db.prepare("SELECT id FROM partner WHERE code = 'CU-2002'").get() as { id: number }
+    ).id;
+    const fg1001 = itemIdOf('FG-1001');
+    expect(
+      reasonsOf({
+        mainItemId: fg1001,
+        warehouseId: warehouseWh02,
+        requiredQty: 10,
+        scene: 'sales_out',
+        customerId: customerCu2002,
+      }),
+    ).toContain('customer_cert_expired');
   });
 
   it('登记为「刻意排除」的枚举确实仍然没有被造数据（排除表不会过期）', () => {

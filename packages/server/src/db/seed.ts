@@ -303,6 +303,9 @@ export function seedDemoData(options: { reset?: boolean } = {}): SeedResult {
       { main: 'RM-3001', sub: 'RM-3008', priority: 2, scene: 'bom_plan', strategy: 'proportion', from: dateOffset(-60), remark: '第二顺位替代：第一顺位不足时继续兜底' },
       // —— 采购建议 ——
       { main: 'RM-3001', sub: 'RM-3005', scene: 'purchase_hint', strategy: 'proportion', from: dateOffset(-60), remark: '采购建议场景：缺料时可改买国产替代' },
+      // 刻意**只建仓库专属行、不建通配行**：这样在别的仓试算时会得到 wrong_warehouse，
+      // 而不是被通配行接住（否则该跳过原因在演示库里永远复现不出来）。下游按它对账。
+      { main: 'PK-4001', sub: 'PK-4003', warehouse: 'WH-01', scene: 'purchase_hint', strategy: 'proportion', from: dateOffset(-45), remark: '仅原料仓适用的采购建议：用于演示 wrong_warehouse（请求其它仓时该关系不适用）' },
       // —— 整批全量——不做混用 ——
       { main: 'RM-3004', sub: 'RM-3006', scene: 'bom_plan', strategy: 'whole_batch', from: dateOffset(-45), remark: '显示屏备用型号：整批全量，不做混用' },
       { main: 'RM-3004', sub: 'RM-3006', warehouse: 'WH-01', scene: 'bom_plan', strategy: 'whole_batch', from: dateOffset(-45), remark: '原料仓专属：在 WH-01 试算时优先于全仓通用规则' },
