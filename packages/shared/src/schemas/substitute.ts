@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { SUBSTITUTE_SCENES, SUBSTITUTE_STRATEGIES } from '../constants';
+import {
+  SUBSTITUTE_SCENES,
+  SUBSTITUTE_STRATEGIES,
+  type SubstituteScene,
+  type SubstituteStrategy,
+  type SubstitutionSkipReason,
+} from '../constants';
 import { dateSchema, optionalText, paginationQuerySchema } from './common';
 
 const optionalId = z.preprocess(
@@ -101,3 +107,63 @@ export const substitutionPlanQuerySchema = z.object({
   asOf: optionalText(40),
 });
 export type SubstitutionPlanQuery = z.infer<typeof substitutionPlanQuerySchema>;
+
+// ---------- 规划响应（IF-9 / 内部 /plan 的共用类型） ----------
+//
+// 这些类型是**前后端共用的唯一事实来源**：服务端 `planSubstitution` 的返回值按它约束，
+// 前端三个页面（替代关系页的需求试算、销售出库的替代建议、BOM 展开的替代建议）也按它读取。
+// 起因：前端原先各自手写了一份同名字段副本，字段改名时 TypeScript 查不出来——曾导致
+// `allocations[].available` 改名 `onHand` 后 BOM 页那列静默显示空值。下沉到 shared 后，
+// 任何一侧改名都会在 `vue-tsc` / `tsc` 阶段直接报错。
+//
+// 命名醒目提示：`onHand` 是**物理可用量**（stock_balance 的 available 桶），等于对外接口
+// IF-3 的 `on_hand`；**不是** IF-3 的 `available`（可承诺量 ATP = on_hand − reserved）。
+
+/** 规划中的一条物料分配 */
+export interface SubstitutionAllocationDto {
+  itemId: number;
+  itemCode: string;
+  itemName: string;
+  /** 实际分配数量（整数） */
+  quantity: number;
+  /** 该数量折算回主料口径的覆盖量（向上取整，可能略大于缺口） */
+  coveredQty: number;
+  isMain: boolean;
+  /** 取数时的物理可用量（available 桶）＝ IF-3 的 on_hand；不是 ATP */
+  onHand: number;
+  unitCost: number;
+  ratioNum: number;
+  ratioDen: number;
+}
+
+/** 一个无法参与分配的替代料及原因 */
+export interface SubstitutionSkipDto {
+  itemId: number;
+  itemCode: string;
+  reason: SubstitutionSkipReason;
+}
+
+/** 规划结果（只读试算，不写任何数据） */
+export interface SubstitutionPlanDto {
+  mainItemId: number;
+  mainItemCode: string;
+  warehouseId: number;
+  scene: SubstituteScene;
+  requiredQty: number;
+  strategy: SubstituteStrategy;
+  allocations: SubstitutionAllocationDto[];
+  /**
+   * 折算回主料口径的已覆盖量。
+   * ⚠ 可能**大于** `requiredQty`：比例向上取整所致（例：比例 2/3、缺口 2 → 覆盖 3），
+   * 因此不要假设 `filledQty = requiredQty − gapQty`。
+   */
+  filledQty: number;
+  /** 主料口径的剩余缺口 */
+  gapQty: number;
+  /**
+   * 只列「**无法参与分配**」的替代料（停用 / 失效 / 仓或父件不符 / 无库存 / 未认证 / 被手工清单排除）。
+   * **不含**「可参与但没轮到」的候选——缺口被高优先级替代料填满后，后面的候选两边都不出现。
+   */
+  skipped: SubstitutionSkipDto[];
+  warnings: string[];
+}

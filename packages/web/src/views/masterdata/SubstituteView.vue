@@ -388,7 +388,7 @@
           </template>
         </el-table-column>
         <el-table-column label="是否主料" width="100">
-          <template #default="{ row }">
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">
             <el-tag :type="row.isMain ? 'primary' : 'success'" size="small">
               {{ row.isMain ? '主料' : '替代料' }}
             </el-tag>
@@ -398,13 +398,13 @@
           <template #default="{ row }">{{ formatQty(row.quantity, 0) }}</template>
         </el-table-column>
         <el-table-column label="折算覆盖量" width="120" align="right">
-          <template #default="{ row }">{{ formatQty(row.coveredQty, 0) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ formatQty(row.coveredQty, 0) }}</template>
         </el-table-column>
         <el-table-column label="当时可用量" width="120" align="right">
-          <template #default="{ row }">{{ formatQty(row.onHand, 0) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ formatQty(row.onHand, 0) }}</template>
         </el-table-column>
         <el-table-column label="比例" width="100" align="right">
-          <template #default="{ row }">{{ ratioText(row.ratioNum, row.ratioDen) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ ratioText(row.ratioNum, row.ratioDen) }}</template>
         </el-table-column>
       </el-table>
 
@@ -412,7 +412,7 @@
       <el-table :data="plan.skipped" border stripe size="small">
         <el-table-column prop="itemCode" label="物料编码" width="180" />
         <el-table-column label="跳过原因">
-          <template #default="{ row }">{{ skipLabel(row.reason) }}</template>
+          <template #default="{ row }: { row: SubstitutionSkipDto }">{{ skipLabel(row.reason) }}</template>
         </el-table-column>
       </el-table>
     </template>
@@ -430,6 +430,10 @@ import {
   SUBSTITUTE_STRATEGY_LABELS,
   type SubstituteScene,
   type SubstituteStrategy,
+  type SubstitutionPlanDto,
+  type SubstitutionPlanQuery,
+  type SubstitutionAllocationDto,
+  type SubstitutionSkipDto,
   type SubstitutionSkipReason,
 } from '@light-erp/shared';
 import { ElMessage } from 'element-plus';
@@ -481,38 +485,6 @@ interface PartnerOption {
   name: string;
 }
 
-interface PlanAllocation {
-  itemId: number;
-  itemCode: string;
-  itemName: string;
-  quantity: number;
-  coveredQty: number;
-  isMain: boolean;
-  onHand: number;
-  unitCost: number;
-  ratioNum: number;
-  ratioDen: number;
-}
-
-interface PlanSkip {
-  itemId: number;
-  itemCode: string;
-  reason: SubstitutionSkipReason;
-}
-
-interface SubstitutionPlan {
-  mainItemId: number;
-  mainItemCode: string;
-  warehouseId: number;
-  scene: SubstituteScene;
-  requiredQty: number;
-  strategy: SubstituteStrategy;
-  allocations: PlanAllocation[];
-  filledQty: number;
-  gapQty: number;
-  skipped: PlanSkip[];
-  warnings: string[];
-}
 
 const PATH = '/api/masterdata/substitutes';
 
@@ -565,7 +537,7 @@ const form = reactive({
 
 const planVisible = ref(false);
 const planLoading = ref(false);
-const plan = ref<SubstitutionPlan | null>(null);
+const plan = ref<SubstitutionPlanDto | null>(null);
 const planWarnings = ref<string[]>([]);
 const planItems = ref<ItemOption[]>([]);
 const planItemLoading = ref(false);
@@ -864,7 +836,7 @@ async function runPlan(): Promise<void> {
   }
   planLoading.value = true;
   try {
-    const res = await http.get<SubstitutionPlan>(`${PATH}/plan`, {
+    const res = await http.get<SubstitutionPlanDto>(`${PATH}/plan`, {
       mainItemId: planForm.mainItemId,
       warehouseId: planForm.warehouseId,
       requiredQty: planForm.requiredQty,
@@ -872,7 +844,7 @@ async function runPlan(): Promise<void> {
       customerId: planForm.scene === 'sales_out' ? planForm.customerId : undefined,
       strategy: planForm.strategy,
       manualItemIds: planForm.strategy === 'manual' ? planForm.manualItemIds.join(',') : undefined,
-    });
+    } satisfies SubstitutionPlanQuery);
     plan.value = res.data;
     planWarnings.value = [
       ...res.data.warnings,

@@ -1,4 +1,11 @@
-import type { SubstituteScene, SubstituteStrategy, SubstitutionSkipReason } from '@light-erp/shared';
+import type {
+  SubstituteScene,
+  SubstituteStrategy,
+  SubstitutionAllocationDto,
+  SubstitutionPlanDto,
+  SubstitutionSkipDto,
+  SubstitutionSkipReason,
+} from '@light-erp/shared';
 import { getDb, type Db } from '../../db/connection';
 import { ApiError } from '../../lib/response';
 import { businessDateOf, businessToday } from '../../lib/time';
@@ -51,51 +58,6 @@ export interface SubstitutionRequest {
   asOf?: string | null;
 }
 
-export interface SubstitutionAllocation {
-  itemId: number;
-  itemCode: string;
-  itemName: string;
-  /** 实际分配数量（整数） */
-  quantity: number;
-  /** 该数量折算回主料口径的覆盖量 */
-  coveredQty: number;
-  isMain: boolean;
-  /**
-   * 取数时的**物理可用量**，即 `stock_balance` 中 `stock_status='available'` 的桶量，
-   * 也就是 IF-3 `/inventory` 里的 `on_hand`。
-   *
-   * 刻意不叫 `available`：IF-3 的 `available` 是「可承诺量 ATP = on_hand − reserved」，
-   * 两者同名不同义，曾让下游据此推出错误的约束。规划按物理量分配（与出库校验一致），
-   * 不扣减销售预占 reserved。
-   */
-  onHand: number;
-  unitCost: number;
-  ratioNum: number;
-  ratioDen: number;
-}
-
-export interface SubstitutionSkip {
-  itemId: number;
-  itemCode: string;
-  reason: SubstitutionSkipReason;
-}
-
-export interface SubstitutionPlan {
-  mainItemId: number;
-  mainItemCode: string;
-  warehouseId: number;
-  scene: SubstituteScene;
-  requiredQty: number;
-  strategy: SubstituteStrategy;
-  allocations: SubstitutionAllocation[];
-  /** 折算回主料口径的已覆盖量 */
-  filledQty: number;
-  /** 主料口径的剩余缺口 */
-  gapQty: number;
-  skipped: SubstitutionSkip[];
-  warnings: string[];
-}
-
 interface ItemRow {
   id: number;
   code: string;
@@ -129,7 +91,7 @@ interface RawRelation {
   effective_to: string | null;
   warehouse_id: number | null;
   parent_item_id: number | null;
-};
+}
 
 /** 向上取整的整数除法：ceil(a / b)，a >= 0、b > 0 */
 function ceilDiv(a: number, b: number): number {
@@ -147,7 +109,7 @@ function assertPositiveInt(value: number, label: string): void {
   }
 }
 
-export function planSubstitution(request: SubstitutionRequest, db: Db = getDb()): SubstitutionPlan {
+export function planSubstitution(request: SubstitutionRequest, db: Db = getDb()): SubstitutionPlanDto {
   assertPositiveInt(request.mainItemId, '主料 id');
   assertPositiveInt(request.warehouseId, '仓库 id');
   assertPositiveInt(request.requiredQty, '需求量');
@@ -172,7 +134,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
   }) as RawRelation[];
 
   const warnings: string[] = [];
-  const skipped: SubstitutionSkip[] = [];
+  const skipped: SubstitutionSkipDto[] = [];
 
   /**
    * 配置层筛选在 JS 侧完成（而非 SQL），为的是让**每个**跳过原因都可达并回传：
@@ -264,7 +226,7 @@ export function planSubstitution(request: SubstitutionRequest, db: Db = getDb())
   //   manual    ：主料优先，缺口只允许用手工指定的替代料补
   //   whole_batch：**不做混用**——主料能全额覆盖就全用主料，否则找单一替代料整批顶上，
   //                都做不到时不做任何分配并把缺口全量返回（宁可缺料，也不拆批）
-  const allocations: SubstitutionAllocation[] = [];
+  const allocations: SubstitutionAllocationDto[] = [];
   const mainOnHand = readBalanceByStatus(db, main.id, request.warehouseId).available;
   const mainCost = readWarehouseCostOf(db, main.id, request.warehouseId);
 

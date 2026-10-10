@@ -137,7 +137,7 @@
           </template>
         </el-table-column>
         <el-table-column label="是否主料" width="100">
-          <template #default="{ row }">
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">
             <el-tag :type="row.isMain ? 'primary' : 'success'" size="small">
               {{ row.isMain ? '主料' : '替代料' }}
             </el-tag>
@@ -147,13 +147,13 @@
           <template #default="{ row }">{{ formatQty(row.quantity, 0) }}</template>
         </el-table-column>
         <el-table-column label="折算覆盖量" width="120" align="right">
-          <template #default="{ row }">{{ formatQty(row.coveredQty, 0) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ formatQty(row.coveredQty, 0) }}</template>
         </el-table-column>
         <el-table-column label="当时可用量" width="120" align="right">
-          <template #default="{ row }">{{ formatQty(row.onHand, 0) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ formatQty(row.onHand, 0) }}</template>
         </el-table-column>
         <el-table-column label="比例" width="100" align="right">
-          <template #default="{ row }">{{ ratioText(row.ratioNum, row.ratioDen) }}</template>
+          <template #default="{ row }: { row: SubstitutionAllocationDto }">{{ ratioText(row.ratioNum, row.ratioDen) }}</template>
         </el-table-column>
       </el-table>
 
@@ -161,7 +161,7 @@
       <el-table :data="suggestion.skipped" border stripe size="small">
         <el-table-column prop="itemCode" label="物料编码" width="180" />
         <el-table-column label="跳过原因">
-          <template #default="{ row }">{{ skipLabel(row.reason) }}</template>
+          <template #default="{ row }: { row: SubstitutionSkipDto }">{{ skipLabel(row.reason) }}</template>
         </el-table-column>
       </el-table>
     </template>
@@ -178,6 +178,10 @@ import {
   SUBSTITUTE_SKIP_REASON_LABELS,
   SUBSTITUTE_STRATEGY_LABELS,
   type SubstituteStrategy,
+  type SubstitutionPlanDto,
+  type SubstitutionPlanQuery,
+  type SubstitutionAllocationDto,
+  type SubstitutionSkipDto,
   type SubstitutionSkipReason,
 } from '@light-erp/shared';
 import { ElMessage } from 'element-plus';
@@ -235,39 +239,6 @@ interface BalanceRow {
   available_qty: number;
 }
 
-interface PlanAllocation {
-  itemId: number;
-  itemCode: string;
-  itemName: string;
-  quantity: number;
-  coveredQty: number;
-  isMain: boolean;
-  /** 物理可用量（available 桶）＝ IF-3 的 on_hand；不是 ATP */
-  onHand: number;
-  unitCost: number;
-  ratioNum: number;
-  ratioDen: number;
-}
-
-interface PlanSkip {
-  itemId: number;
-  itemCode: string;
-  reason: SubstitutionSkipReason;
-}
-
-interface SubstitutionPlan {
-  mainItemId: number;
-  mainItemCode: string;
-  warehouseId: number;
-  scene: string;
-  requiredQty: number;
-  strategy: SubstituteStrategy;
-  allocations: PlanAllocation[];
-  filledQty: number;
-  gapQty: number;
-  skipped: PlanSkip[];
-  warnings: string[];
-}
 
 const route = useRoute();
 
@@ -285,7 +256,7 @@ const available = ref<Map<number, number>>(new Map());
 const suggestVisible = ref(false);
 const suggestLoading = ref(false);
 const suggestLine = ref<ExplodeNode | null>(null);
-const suggestion = ref<SubstitutionPlan | null>(null);
+const suggestion = ref<SubstitutionPlanDto | null>(null);
 const suggestWarnings = ref<string[]>([]);
 
 /** BOM 用量是配方系数（非库存精度缩放量），直接按原始数值展示 */
@@ -391,12 +362,12 @@ async function showSuggestion(row: ExplodeNode): Promise<void> {
   }
   suggestLoading.value = true;
   try {
-    const res = await http.get<SubstitutionPlan>('/api/masterdata/substitutes/plan', {
+    const res = await http.get<SubstitutionPlanDto>('/api/masterdata/substitutes/plan', {
       mainItemId: row.itemId,
       warehouseId: warehouseId.value,
       requiredQty,
       scene: 'bom_plan',
-    });
+    } satisfies SubstitutionPlanQuery);
     suggestion.value = res.data;
     suggestWarnings.value = [...res.data.warnings, ...res._warnings.map((item) => String(item))];
   } catch {

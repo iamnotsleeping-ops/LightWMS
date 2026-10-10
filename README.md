@@ -87,6 +87,24 @@ light-erp/
       └─ views/            # 独立页面，按模块分目录
 ```
 
+## 类型与契约约定（避免前后端字段漂移）
+
+这三条是踩过坑才立的规矩，改接口字段前先看这里：
+
+- **接口的请求 / 响应类型定义在 `packages/shared`，服务端与前端都从那里导入**，不允许前端页面各自手写一份副本。
+  起因：前端原先各自手写了规划响应类型，服务端把 `allocations[].available` 改名 `onHand` 后，
+  BOM 展开页那一列**静默显示空值**——因为两边各自"自洽"，TypeScript 查不出来。
+  现状：`SubstitutionPlanDto` / `SubstitutionAllocationDto` / `SubstitutionSkipDto` /
+  `SubstitutionPlanQuery` 即共用定义（`packages/shared/src/schemas/substitute.ts`）。
+- **`el-table` 插槽的 `row` 是隐式 `any`，模板里的字段访问不受类型检查**，读取契约字段时必须显式标注：
+  `<template #default="{ row }: { row: SubstitutionAllocationDto }">`。
+  只给确实读契约字段的表格加；页面内部的普通表格不需要。
+- **查询参数用 `satisfies` 绑定到共享 schema 类型**：`http.get<T>(path, { ... } satisfies SubstitutionPlanQuery)`，
+  这样参数改名同样会在编译期失败。
+
+效果已实测：把共享 DTO 的 `onHand` 改名后，**三处前端模板与服务端同时报错**（`vue-tsc` / `tsc`），
+这类字段漂移不再可能静默上线。
+
 ## 核心表关系
 
 > **逐表字段字典见 [docs/数据表字典.md](docs/数据表字典.md)**：33 张表的字段、类型、约束、索引、外键、非显然字段说明与跨表不变量，由 `pnpm --filter @light-erp/server schema-doc` 从库结构生成（不手写，故不会随迁移漂移）。本节只给全局关系与口径。

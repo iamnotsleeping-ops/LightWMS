@@ -4,12 +4,13 @@ import {
   type SubstituteRelationUpdateBody,
   type SubstituteScene,
   type SubstituteStrategy,
+  type SubstitutionPlanDto,
   type SubstitutionPlanQuery,
 } from '@light-erp/shared';
 import { getDb, type Db } from '../../db/connection';
 import { ApiError, type PageInfo } from '../../lib/response';
 import { buildSet, rethrowConstraint } from '../../lib/sqlite';
-import { planSubstitution, type SubstitutionPlan } from './substitute.plan';
+import { planSubstitution } from './substitute.plan';
 
 /**
  * 替代关系主数据维护（P10）。
@@ -360,7 +361,7 @@ function parseManualItemIds(raw: string | undefined): number[] | undefined {
 }
 
 /** 薄适配层：查询参数 → `planSubstitution` 的 camelCase 请求，不改变任何规划口径 */
-export function planForQuery(query: SubstitutionPlanQuery): SubstitutionPlan {
+export function planForQuery(query: SubstitutionPlanQuery): SubstitutionPlanDto {
   return planSubstitution({
     mainItemId: query.mainItemId,
     warehouseId: query.warehouseId,
