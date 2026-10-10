@@ -116,6 +116,7 @@ const NOTES: Record<string, TableNote> = {
       'effective_from / effective_to': '版本生效期，`NULL` 表示不设边界；`as_of` 查询即按此择版本。',
     },
     notes: [
+      '唯一键是 **`(父件, 子件, COALESCE(effective_from, \'0000-01-01\'))`**：同一对父子的多版本就靠它与生效期共同表达——同一 `effective_from` 下至多一行，不同 `effective_from` 可多行；`effective_from` 为 NULL 时以 `\'0000-01-01\'` 参与唯一性判断。',
       'BOM 展开只在内存里递归，不落表；循环引用由服务层检测并回传 `cycles`。',
       'P10 的替代料建议**不改写 BOM**：缺口行的替代建议由前端调 `GET /api/masterdata/substitutes/plan` 得到。',
     ],
@@ -146,7 +147,7 @@ const NOTES: Record<string, TableNote> = {
     notes: [
       '**单向**：A→B 与 B→A 是两条独立记录，不互推。',
       '**一层**：只匹配主料的直接替代料，绝不递归「替代料的替代料」。',
-      '同一主料 / 替代料 / 场景下，(父件, 仓库) 组合唯一：唯一索引用 `COALESCE(...,0)` 表达式，因为 SQLite 中 `NULL` 不参与唯一性判断。',
+      '唯一键是 **5 维**：`(主料, 替代料, 场景, COALESCE(父件,0), COALESCE(仓库,0))`——同一对料号在同一场景下仍可按「父件作用域 × 仓库作用域」细分，**每种组合至多一行**。注意：唯一索引里父件/仓库参与判定，所以「全仓通用」与「某仓专属」是两行、可以并存，不是重复数据；`NULL`（不限）被归一化成 `0` 哨兵，因为 SQLite 中 `NULL` 互不相等、不参与唯一性判断（物料与仓库 id 自增、从 1 起，故 `0` 可安全作哨兵）。',
       '`CHECK (main_item_id <> sub_item_id)` 由数据库兜底，服务层也拦。',
     ],
   },
@@ -349,15 +350,68 @@ function columnsOf(db: Database.Database, table: string) {
   }[];
 }
 
+/** 从索引定义 SQL 中取出括号内的键列 / 表达式（按顶层逗号切分，保留 COALESCE 这类表达式） */
+function parseIndexColumns(sql: string): string[] {
+  const start = sql.indexOf('(');
+  const end = sql.lastIndexOf(')');
+  if (start < 0 || end <= start) return [];
+  const body = sql.slice(start + 1, end);
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of body) {
+    if (char === '(') depth += 1;
+    if (char === ')') depth -= 1;
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => part.length > 0);
+}
+
 function indexesOf(db: Database.Database, table: string) {
   const list = db.prepare(`PRAGMA index_list("${table}")`).all() as {
     name: string;
     unique: number;
+    partial: number;
   }[];
   return list.map((index) => {
-    const info = db.prepare(`PRAGMA index_info("${index.name}")`).all() as { name: string | null }[];
-    const cols = info.map((row) => row.name).filter((name): name is string => name !== null);
-    return { name: index.name, unique: index.unique === 1, columns: cols };
+    // 键列数以 index_xinfo 的 key=1 为准（含**表达式列**，它们在 index_info 里 name 为 NULL）
+    const keyCount = (
+      db.prepare(`PRAGMA index_xinfo("${index.name}")`).all() as { key: number }[]
+    ).filter((row) => row.key === 1).length;
+    const definition = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get(index.name) as { sql: string | null } | undefined;
+    const parsed = definition?.sql ? parseIndexColumns(definition.sql) : [];
+    const columns =
+      parsed.length > 0
+        ? parsed
+        : (db.prepare(`PRAGMA index_info("${index.name}")`).all() as { name: string | null }[])
+            .map((row) => row.name)
+            .filter((name): name is string => name !== null);
+
+    // 护栏：解析出的键列数必须等于 pragma 报告的实际键列数。
+    // 早期版本直接按 index_info 取名，把 COALESCE(...) 这类表达式列静默丢掉，
+    // 导致字典里 uq_item_substitute_scope 少报「父件作用域 + 仓库作用域」两维，
+    // 读文档的人据此推出了错误的本体约束。宁可直接报错，也不允许再静默少报。
+    if (columns.length !== keyCount) {
+      throw new Error(
+        `索引 ${table}.${index.name} 键列解析不一致：解析出 ${columns.length} 个，实际 ${keyCount} 个`,
+      );
+    }
+    return {
+      name: index.name,
+      unique: index.unique === 1,
+      partial: index.partial === 1,
+      columns,
+    };
   });
 }
 
@@ -540,7 +594,7 @@ function main(): void {
         push('索引：', '');
         for (const index of indexes) {
           push(
-            `- ${index.unique ? '**UNIQUE** ' : ''}\`${index.name}\` (${index.columns.join(', ') || '表达式'})`,
+            `- ${index.unique ? '**UNIQUE** ' : ''}\`${index.name}\` (${index.columns.join(', ') || '表达式'})${index.partial ? '（部分索引）' : ''}`,
           );
         }
         push('');
